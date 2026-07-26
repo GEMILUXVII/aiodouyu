@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 from .exceptions import ApiError, RoomNotFound
 
-__all__ = ["RoomInfo", "fetch_room"]
+__all__ = ["RoomInfo", "fetch_room", "fetch_rooms", "resolve_room_id"]
 
 _TIMEZONE_CST = timezone(timedelta(hours=8))  # 斗鱼时间均为北京时间
 
@@ -274,3 +274,53 @@ async def fetch_room(
     except ApiError:
         payload = await _fetch(_OPEN_URL.format(room_id=room_id), {}, timeout)
         return _parse_open(room_id, payload)
+
+
+async def fetch_rooms(
+    room_ids,
+    *,
+    source: Source = "auto",
+    timeout: float = 10.0,
+    concurrency: int = 5,
+) -> dict[int, RoomInfo | Exception]:
+    """Fetch several rooms with bounded concurrency. / 批量拉取房间信息
+
+    逐房间异常不拖垮整批:失败的房间在结果里以异常对象出现,由调用方
+    决定降级方式。并发上限防止一次性打出 N 个请求触发风控;缓存/限速
+    等策略留给应用层。
+
+    Args:
+        room_ids: 房间号可迭代对象(自动去重,保序)
+        source/timeout: 透传 fetch_room
+        concurrency: 并发上限
+
+    Returns:
+        ``{room_id: RoomInfo | Exception}``
+    """
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def one(rid: int) -> tuple[int, RoomInfo | Exception]:
+        async with semaphore:
+            try:
+                return rid, await fetch_room(rid, source=source, timeout=timeout)
+            except Exception as exc:
+                return rid, exc
+
+    unique = list(dict.fromkeys(room_ids))
+    return dict(await asyncio.gather(*(one(r) for r in unique)))
+
+
+async def resolve_room_id(room_id: int, *, timeout: float = 10.0) -> int:
+    """Resolve a vanity room id to the real rid. / 靓号解析为真实房间号
+
+    弹幕连接必须用真实 rid:拿主页 URL 里的靓号去连,要么无消息要么
+    连错房,且无报错、极难自诊。betard 对靓号本就返回真实 rid,本函数
+    只是把这层归一化显式化。真实 rid 输入原样返回,可无脑套用::
+
+        client = DanmakuClient(await resolve_room_id(666))
+
+    Raises:
+        RoomNotFound / ApiError / TypeError / ValueError: 同 fetch_room
+    """
+    info = await fetch_room(room_id, source="betard", timeout=timeout)
+    return info.room_id

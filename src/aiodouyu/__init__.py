@@ -29,13 +29,14 @@ from .exceptions import (
     ProtocolError,
     RoomNotFound,
 )
+from .hub import DanmakuHub
 
 # 注:包属性 aiodouyu.replay 是回放函数;录制辅助函数经
 # `from aiodouyu.replay import write_header, write_message` 取用
 from .replay import replay
-from .web import RoomInfo, fetch_room
+from .web import RoomInfo, fetch_room, fetch_rooms, resolve_room_id
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "EVENT_CONNECTED",
@@ -44,14 +45,17 @@ __all__ = [
     "ApiError",
     "ConnectionClosed",
     "DanmakuClient",
+    "DanmakuHub",
     "ProtocolError",
     "RoomInfo",
     "RoomNotFound",
     "__version__",
     "fetch_room",
+    "fetch_rooms",
     "models",
     "packet",
     "replay",
+    "resolve_room_id",
     "stt",
     "web",
 ]

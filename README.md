@@ -9,7 +9,7 @@
 
 斗鱼弹幕与房间状态的 **asyncio** 客户端库 —— 零依赖、自动重连、干净停止。
 
-[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
+[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [多房间](#多房间danmakuhub) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
 
 ## 为什么有这个库
 
@@ -136,6 +136,28 @@ async for msg in client:
         print("状态变化:", msg.get("ss") == "1" and msg.get("ivl") == "0")
 ```
 
+## 多房间(DanmakuHub)
+
+监控 N 个主播的应用不必手写任务编排、异常隔离、聚合队列、优雅关停
+这套样板——Hub 把它们上移进库:
+
+```python
+from aiodouyu import DanmakuHub
+
+hub = DanmakuHub(types={"rss"}, emit_connection_events=True)
+await hub.add(9999)          # 运行中可动态增删,幂等
+await hub.add(288016)
+async for room_id, msg in hub:   # 统一聚合流,库负责打房间号
+    ...
+await hub.close()            # 关停全部房间,不遗留任务
+```
+
+**消费速度与背压**:聚合队列有界(默认 1024)。`overflow="block"`
+(默认)时慢消费者会反压到各房间的 TCP 接收——不丢消息,代价是消费
+时效;只关心最新状态的场景用 `overflow="drop_oldest"` 丢旧保新。
+单客户端场景同理:`async for` 不取消息时 TCP 缓冲会积压,长期不消费
+可能被服务端判定僵尸连接断开(库会自动重连)。
+
 ## 类型化模型（可选）
 
 不想记 `nn`/`txt`/`gfid` 这些协议字段名？`models.parse()` 把常见消息
@@ -206,7 +228,7 @@ async for msg in replay("dump.jsonl", types={"rss"}):
 - `web` 模块的 betard 数据源是网页端内部接口，字段可能随时变更
   （`auto` 模式会自动回退到公开 API）
 
-路线图：0.3 多房间管理器与批量 `fetch_rooms`；0.4 WebSocket 传输。
+路线图：0.4 WebSocket 传输。
 欢迎 issue / PR（贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 
 ## 版本与稳定性

@@ -3,6 +3,19 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
 0.x 阶段的兼容承诺见 README「版本与稳定性」。
 
+## [0.3.0] - 2026-07-27
+
+### Added
+
+- **DanmakuHub 多房间管理器**:N 个房间聚合为单一 `(room_id, msg)`
+  流;`add`/`remove` 幂等可动态增删、单房故障隔离、有界队列
+  (`overflow="block"` 反压不丢消息 / `"drop_oldest"` 丢旧保新)、
+  `close()` 干净关停。真实服务器双房验证
+- **`fetch_rooms()`**:批量限并发拉取房间信息,逐房异常不拖垮整批
+- **`resolve_room_id()`**:靓号解析为真实 rid(弹幕连接必须用真实
+  rid,这是新用户第一坑)
+- examples/multi_room.py;README 增补多房间与背压说明
+
 ## [0.2.0] - 2026-07-27
 
 ### Added

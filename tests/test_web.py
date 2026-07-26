@@ -261,6 +261,35 @@ async def test_http_500_maps_to_api_error(monkeypatch):
         await web.fetch_room(9999, source="open")
 
 
+async def test_fetch_rooms_batch(monkeypatch):
+    """批量拉取:限并发、逐房异常不拖垮整批、去重"""
+    calls = []
+
+    async def fake_fetch(url, headers, timeout):
+        calls.append(url)
+        if "404404" in url:
+            raise web.RoomNotFound("gone") if hasattr(web, "RoomNotFound") else Exception
+        return OPEN_LIVE
+
+    monkeypatch.setattr(web, "_fetch", fake_fetch)
+    result = await web.fetch_rooms(
+        [9999, 404404, 9999], source="open", concurrency=2
+    )
+    assert set(result) == {9999, 404404}  # 去重
+    assert result[9999].owner == "yyfyyf"
+    assert isinstance(result[404404], Exception)
+
+
+async def test_resolve_room_id_vanity(monkeypatch):
+    """靓号解析:betard 归一化的 room_id 即真实 rid"""
+    payload = {"room": {**BETARD_LIVE["room"], "room_id": 606118}}
+    fake, calls = fake_fetch({BETARD_PREFIX: payload})
+    monkeypatch.setattr(web, "_fetch", fake)
+    real = await web.resolve_room_id(666)
+    assert real == 606118
+    assert "666" in calls[0]  # 用靓号发起查询
+
+
 async def test_parse_cst_time_invalid():
     assert web._parse_cst_time("not a date") is None
     assert web._parse_cst_time(None) is None
