@@ -154,6 +154,41 @@ async def test_open_room_not_found(monkeypatch):
         await web.fetch_room(123456789, source="open")
 
 
+async def test_open_transient_error_code_is_api_error(monkeypatch):
+    """非 101 的错误码可能是瞬时故障,不得断言为房间不存在"""
+    fake, _ = fake_fetch({OPEN_PREFIX: {"error": 999, "data": "rate limited"}})
+    monkeypatch.setattr(web, "_fetch", fake)
+    with pytest.raises(ApiError) as ei:
+        await web.fetch_room(9999, source="open")
+    assert not isinstance(ei.value, RoomNotFound)
+
+
+async def test_open_malformed_data_is_api_error(monkeypatch):
+    """error=0 但 data 畸形是响应结构异常,不是房间不存在"""
+    fake, _ = fake_fetch({OPEN_PREFIX: {"error": 0, "data": "garbage"}})
+    monkeypatch.setattr(web, "_fetch", fake)
+    with pytest.raises(ApiError) as ei:
+        await web.fetch_room(9999, source="open")
+    assert not isinstance(ei.value, RoomNotFound)
+
+
+async def test_unknown_charset_maps_to_api_error(monkeypatch):
+    """服务端返回未知 charset 时 LookupError 不得穿透异常契约"""
+
+    def raise_lookup(url, headers, timeout):
+        raise LookupError("unknown encoding: bogus-enc")
+
+    monkeypatch.setattr(web, "_http_get_json", raise_lookup)
+    with pytest.raises(ApiError):
+        await web.fetch_room(9999, source="open")
+
+
+async def test_to_int_handles_infinity():
+    assert web._to_int(float("inf")) is None
+    assert web._to_int(float("-inf")) is None
+    assert web._to_int(float("nan")) is None
+
+
 async def test_auto_falls_back_to_open_on_api_error(monkeypatch):
     fake, calls = fake_fetch(
         {BETARD_PREFIX: ApiError("模拟风控"), OPEN_PREFIX: OPEN_LIVE}

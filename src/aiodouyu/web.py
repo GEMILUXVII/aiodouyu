@@ -99,7 +99,8 @@ def _http_get_json(url: str, headers: dict[str, str], timeout: float) -> Any:
 def _to_int(value: Any) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json 默认接受非标常量 Infinity,int(inf) 会抛
         return None
 
 
@@ -150,11 +151,15 @@ def _parse_open(room_id: int, payload: Any) -> RoomInfo:
         raise ApiError(f"open API 返回非对象响应: {type(payload).__name__}")
     error = _to_int(payload.get("error"))
     data = payload.get("data")
-    if error != 0 or not isinstance(data, dict):
-        # error=101 房间未找到;其余非零码一律视为房间不可用
-        raise RoomNotFound(
-            f"房间 {room_id} 不存在或不可用(open API error={payload.get('error')})"
-        )
+    if error != 0:
+        # 只有 101(房间未找到)是"房间不存在"的确定性结论;
+        # 其余非零码可能是限流等瞬时故障,断言房间不存在会误导调用方
+        if error == 101:
+            raise RoomNotFound(f"房间 {room_id} 不存在(open API error=101)")
+        raise ApiError(f"open API 返回错误码 {payload.get('error')}")
+    if not isinstance(data, dict):
+        # error=0 但 data 缺失/非对象是响应结构异常,不是房间不存在
+        raise ApiError("open API 响应缺少 data 对象")
 
     room_status = _to_int(data.get("room_status"))
     is_live = room_status == 1
@@ -199,10 +204,12 @@ async def _fetch(url: str, headers: dict[str, str], timeout: float) -> Any:
         TimeoutError,
         OSError,
         ValueError,
+        LookupError,
     ) as exc:
         # ValueError 覆盖 json.JSONDecodeError 与畸形 URL;
         # HTTPException 覆盖 IncompleteRead/LineTooLong 等非 OSError 的
-        # 传输层异常(RemoteDisconnected 继承 OSError,其余不继承)
+        # 传输层异常(RemoteDisconnected 继承 OSError,其余不继承);
+        # LookupError 覆盖服务端返回未知 charset 时的 decode 失败
         raise ApiError(f"请求 {url} 失败: {exc}") from exc
 
 
@@ -219,7 +226,10 @@ async def fetch_room(
         source: 数据源。"betard"(默认优先,字段全且能识别轮播)、
             "open"(公开 API,更稳但不识别轮播)、"auto"(先 betard,
             传输层失败时回退 open;房间不存在不回退)
-        timeout: 单次 HTTP 请求超时(秒)
+        timeout: 传给 urllib 的超时(秒)。注意这是**逐 socket 操作**
+            超时(connect/recv 各自计时),不含 DNS 解析,慢速滴流响应
+            的总时长可超过该值;经 to_thread 执行的请求被取消时底层
+            线程会继续运行到 socket 层面结束
 
     Returns:
         归一化的 RoomInfo 快照
