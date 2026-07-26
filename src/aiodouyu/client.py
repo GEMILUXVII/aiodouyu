@@ -139,6 +139,13 @@ class DanmakuClient:
             emit_connection_events: 是否产出 EVENT_CONNECTED /
                 EVENT_DISCONNECTED 伪事件（供消费方感知断连窗口）
         """
+        # 显式类型检查:房间号常来自配置/命令参数,字符串形态是最高频
+        # 误用,裸比较会抛难以理解的 TypeError('<=' not supported ...)
+        if isinstance(room_id, bool) or not isinstance(room_id, int):
+            raise TypeError(
+                f"room_id 必须为 int,收到 {type(room_id).__name__}"
+                f"(字符串请先 int() 转换)"
+            )
         if room_id <= 0:
             raise ValueError("room_id 必须为正整数")
         self.room_id = room_id

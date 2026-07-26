@@ -213,6 +213,11 @@ async def test_invalid_room_id():
         await web.fetch_room(0)
 
 
+async def test_room_id_string_raises_clear_type_error():
+    with pytest.raises(TypeError, match="room_id 必须为 int"):
+        await web.fetch_room("9999")  # type: ignore[arg-type]
+
+
 async def test_invalid_source():
     with pytest.raises(ValueError):
         await web.fetch_room(9999, source="bogus")  # type: ignore[arg-type]

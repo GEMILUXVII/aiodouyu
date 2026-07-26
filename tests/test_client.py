@@ -321,6 +321,14 @@ async def test_invalid_room_id():
         DanmakuClient(room_id=0)
 
 
+async def test_room_id_type_error_is_clear():
+    """字符串房间号是最高频误用,报错必须直说类型问题"""
+    with pytest.raises(TypeError, match="room_id 必须为 int"):
+        DanmakuClient(room_id="9999")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        DanmakuClient(room_id=True)  # type: ignore[arg-type]
+
+
 async def test_close_interrupts_backoff_sleep():
     """close() 必须立即打断重连退避等待,而非睡满整个 delay"""
     # 连一个无监听的端口:连接立即失败,进入长退避

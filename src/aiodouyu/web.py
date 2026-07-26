@@ -239,6 +239,11 @@ async def fetch_room(
         ApiError: 网络失败或响应无法解析
         ValueError: room_id 非正整数
     """
+    if isinstance(room_id, bool) or not isinstance(room_id, int):
+        raise TypeError(
+            f"room_id 必须为 int,收到 {type(room_id).__name__}"
+            f"(字符串请先 int() 转换)"
+        )
     if room_id <= 0:
         raise ValueError("room_id 必须为正整数")
 
