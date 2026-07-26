@@ -36,7 +36,7 @@ from .hub import DanmakuHub
 from .replay import replay
 from .web import RoomInfo, fetch_room, fetch_rooms, resolve_room_id
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "EVENT_CONNECTED",

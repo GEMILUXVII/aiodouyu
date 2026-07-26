@@ -284,6 +284,22 @@ async def test_invalid_overflow():
         DanmakuHub(overflow="bogus")
 
 
+async def test_drop_oldest_rejects_unbounded_queue():
+    """drop_oldest + 无界队列是语义陷阱(永不丢弃、无上限堆积)"""
+    with pytest.raises(ValueError, match="queue_maxsize"):
+        DanmakuHub(overflow="drop_oldest", queue_maxsize=0)
+
+
+async def test_client_kwargs_passthrough():
+    """Hub 必须能组合 0.4 的 ws 传输等 per-client 参数"""
+    hub = DanmakuHub(types={"rss"}, transport="ws", idle_timeout=180.0)
+    client = hub._factory(9999)
+    assert client.transport == "ws"
+    assert client.idle_timeout == 180.0
+    assert client.types == {"rss"}
+    await hub.close()
+
+
 async def test_single_iterator_guard(server):
     hub = make_hub(server)
     it1 = hub.__aiter__()

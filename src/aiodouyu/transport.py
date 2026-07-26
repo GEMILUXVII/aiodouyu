@@ -7,8 +7,10 @@
 - ``TcpTransport``: ``danmuproxy.douyu.com:8601`` 明文 TCP(默认)
 - ``WsTransport``: ``wss://danmuproxy.douyu.com:8506``,网页端同款。
   手写最小 RFC 6455 客户端(仅客户端角色、二进制帧、零扩展协商),
-  保持零运行时依赖。价值:TCP 8601 常被企业防火墙/部分云出口拦截,
-  而 443 系 TLS WebSocket 存活率高;同时对冲非官方 TCP 端点再次迁移
+  保持零运行时依赖。价值:TLS 包裹使 DPI/协议指纹识别失效,并对冲
+  非官方 TCP 端点再次迁移。**注意 8506 仍是非标高端口**——只放行
+  80/443 出站的端口白名单防火墙会同样拦截它,ws 在那种网络里并不比
+  TCP 更能穿透
 
 ping/pong 在传输层透明处理;close 帧与 EOF 一致地表现为读取失败,
 由客户端层的重连逻辑接管。
@@ -145,8 +147,13 @@ class WsTransport:
         实测:danmuproxy 的 wss 端点只提供 ``AES256-GCM-SHA384``
         (RSA 密钥交换、无 ECDHE、无前向保密),现代 OpenSSL 的默认
         SECLEVEL=2 会直接拒绝并抛
-        ``SSLV3_ALERT_HANDSHAKE_FAILURE``。这里只把密码套件安全级别
-        降到 1,**证书校验与主机名校验保持开启**(实测无需关闭)。
+        ``SSLV3_ALERT_HANDSHAKE_FAILURE``。这里把安全级别降到 1。
+
+        安全含义(如实说明):SECLEVEL 不只约束密码套件,也约束握手中
+        可接受的证书签名算法与密钥强度——降到 1 会接受 SHA-1 签名、
+        1024 位 RSA 等 SECLEVEL=2 下被拒的证书。**证书链与主机名校验
+        仍然开启**,且弹幕是公开数据,风险可控;需要更严格时传入自定义
+        ``ssl_context``。
         """
         ctx = ssl.create_default_context()
         ctx.set_ciphers("DEFAULT@SECLEVEL=1")
@@ -179,7 +186,11 @@ class WsTransport:
             await writer.drain()
 
             status = await reader.readline()
-            if b"101" not in status.split(b" ", 2)[1:2] and b" 101 " not in status:
+            # 规范化解析:按空白切分取状态码严格相等比较。
+            # (旧的 b" 101 " 子串兜底会误接受 reason 里含 "101" 的响应,
+            #  也会误拒 RFC 7230 允许的空 reason 形式 "HTTP/1.1 101")
+            parts = status.split()
+            if len(parts) < 2 or parts[1] != b"101":
                 raise ProtocolError(f"WebSocket 握手被拒: {status!r:.100}")
             accept_expected = base64.b64encode(
                 hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()

@@ -281,13 +281,37 @@ async def test_fetch_rooms_batch(monkeypatch):
 
 
 async def test_resolve_room_id_vanity(monkeypatch):
-    """靓号解析:betard 归一化的 room_id 即真实 rid"""
-    payload = {"room": {**BETARD_LIVE["room"], "room_id": 606118}}
-    fake, calls = fake_fetch({BETARD_PREFIX: payload})
-    monkeypatch.setattr(web, "_fetch", fake)
-    real = await web.resolve_room_id(666)
-    assert real == 606118
-    assert "666" in calls[0]  # 用靓号发起查询
+    """靓号解析:从移动端页面 HTML 抽取真实 rid
+
+    实测:betard 对靓号返回错误页、open API 对靓号原样回显,
+    两者都解析不了——只有 m.douyu.com 的页面带真实 rid。
+    """
+    calls = []
+
+    def fake_text(url, headers, timeout):
+        calls.append(url)
+        return '{"room":{"room_id":"6979222","nickname":"x"}}'
+
+    monkeypatch.setattr(web, "_http_get_text", fake_text)
+    assert await web.resolve_room_id(6657) == 6979222
+    assert "m.douyu.com/6657" in calls[0]
+
+
+async def test_resolve_room_id_falls_back_to_input(monkeypatch):
+    """页面里抽不到 rid 时原样返回:输入本就是真实 rid 是常态路径"""
+
+    def fake_text(url, headers, timeout):
+        return "<html>no rid here</html>"
+
+    monkeypatch.setattr(web, "_http_get_text", fake_text)
+    assert await web.resolve_room_id(9999) == 9999
+
+
+async def test_resolve_room_id_validates_type():
+    with pytest.raises(TypeError):
+        await web.resolve_room_id("6657")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        await web.resolve_room_id(0)
 
 
 async def test_parse_cst_time_invalid():

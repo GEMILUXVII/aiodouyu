@@ -212,8 +212,8 @@ async for msg in replay("dump.jsonl", types={"rss"}):
 
 ## 传输方式(TCP / WebSocket)
 
-默认走明文 TCP(`danmuproxy.douyu.com:8601`)。该端口常被企业防火墙
-或部分云出口拦截,受限网络可切到网页端同款的 WebSocket 端点:
+默认走明文 TCP(`danmuproxy.douyu.com:8601`)。受限网络可切到网页端同款的
+WebSocket 端点:
 
 ```python
 DanmakuClient(9999, transport="ws")     # wss://danmuproxy.douyu.com:8506
@@ -224,10 +224,21 @@ WebSocket 客户端是手写的最小 RFC 6455 实现(仅客户端角色、二�
 零扩展协商),**零依赖不变**;弹幕协议在两种传输上完全一致,ping/pong
 在传输层透明处理。
 
+> **ws 的真实收益**是 TLS 包裹让 DPI/协议指纹识别失效,以及对冲非官方
+> TCP 端点再次迁移——但 8506 仍是非标高端口,只放行 80/443 出站的
+> 端口白名单防火墙会同样拦它。
+>
 > 实测细节:斗鱼 wss 端点只提供 `AES256-GCM-SHA384`(RSA 密钥交换),
-> 现代 OpenSSL 默认的 SECLEVEL=2 会直接拒绝握手。库内置的 TLS 上下文
-> 只把密码套件安全级别降到 1,**证书与主机名校验保持开启**;需要自定
-> 义时传 `ssl_context`。
+> 现代 OpenSSL 默认 SECLEVEL=2 会直接拒绝握手。库内置 TLS 上下文把
+> 安全级别降到 1——注意这**同时**放宽了可接受的证书签名算法与密钥
+> 强度(不只密码套件),但证书链与主机名校验仍开启;需要更严格时传
+> `ssl_context`。
+
+多房间同样可以走 WebSocket(参数透传给每个客户端):
+
+```python
+DanmakuHub(types={"rss"}, transport="auto")
+```
 
 ## 协议说明
 

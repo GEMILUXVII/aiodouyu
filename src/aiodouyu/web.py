@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
@@ -38,6 +39,9 @@ _TIMEZONE_CST = timezone(timedelta(hours=8))  # 斗鱼时间均为北京时间
 
 _BETARD_URL = "https://www.douyu.com/betard/{room_id}"
 _OPEN_URL = "https://open.douyucdn.cn/api/RoomApi/room/{room_id}"
+# 靓号只在移动端页面能解析为真实 rid(betard 返回错误页、open 原样回显)
+_MOBILE_URL = "https://m.douyu.com/{room_id}"
+_RID_PATTERN = re.compile(r'"(?:room_id|rid)"\s*:\s*"?(\d+)')
 
 # betard 是网页端接口,需要浏览器化的请求头
 _BETARD_HEADERS = {
@@ -98,6 +102,28 @@ def _http_get_json(url: str, headers: dict[str, str], timeout: float) -> Any:
         charset = response.headers.get_content_charset() or "utf-8"
         body = response.read()
     return json.loads(body.decode(charset, errors="replace"))
+
+
+def _http_get_text(url: str, headers: dict[str, str], timeout: float) -> str:
+    """同步 HTTP GET 取文本(在 to_thread 中运行)"""
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset, errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RoomNotFound(f"房间不存在: {url} 返回 HTTP 404") from exc
+        raise ApiError(f"请求 {url} 失败: HTTP {exc.code}") from exc
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+        ValueError,
+        LookupError,
+    ) as exc:
+        raise ApiError(f"请求 {url} 失败: {exc}") from exc
 
 
 def _to_int(value: Any) -> int | None:
@@ -317,14 +343,35 @@ async def fetch_rooms(
 async def resolve_room_id(room_id: int, *, timeout: float = 10.0) -> int:
     """Resolve a vanity room id to the real rid. / 靓号解析为真实房间号
 
-    弹幕连接必须用真实 rid:拿主页 URL 里的靓号去连,要么无消息要么
-    连错房,且无报错、极难自诊。betard 对靓号本就返回真实 rid,本函数
-    只是把这层归一化显式化。真实 rid 输入原样返回,可无脑套用::
+    弹幕连接必须用真实 rid:拿主页 URL 里的靓号(如
+    ``douyu.com/6657``,真实 rid 是 6979222)去连,要么无消息要么连错
+    房,且无报错、极难自诊。真实 rid 输入原样返回,可无脑套用::
 
-        client = DanmakuClient(await resolve_room_id(666))
+        client = DanmakuClient(await resolve_room_id(6657))
+
+    实现:靓号只在移动端房间页 ``m.douyu.com/{id}`` 的 HTML 里能拿到
+    真实 rid——betard 对靓号返回错误页,open API 对靓号原样回显(实测),
+    两者都无法解析。因此本函数解析移动端页面;失败时回退为返回原值
+    (真实 rid 的输入本就无需解析)。
 
     Raises:
-        RoomNotFound / ApiError / TypeError / ValueError: 同 fetch_room
+        ApiError: 页面获取失败且无法判定
+        TypeError / ValueError: room_id 非正整数
     """
-    info = await fetch_room(room_id, source="betard", timeout=timeout)
-    return info.room_id
+    if isinstance(room_id, bool) or not isinstance(room_id, int):
+        raise TypeError(
+            f"room_id 必须为 int,收到 {type(room_id).__name__}"
+        )
+    if room_id <= 0:
+        raise ValueError("room_id 必须为正整数")
+
+    html = await asyncio.to_thread(
+        _http_get_text, _MOBILE_URL.format(room_id=room_id), _BETARD_HEADERS, timeout
+    )
+    match = _RID_PATTERN.search(html)
+    if match:
+        resolved = _to_int(match.group(1))
+        if resolved and resolved > 0:
+            return resolved
+    # 解析不到:输入本就是真实 rid 的常态路径,原样返回
+    return room_id

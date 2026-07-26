@@ -449,10 +449,17 @@ class DanmakuClient:
             return await TcpTransport.connect(self.host, self.port)
         if mode == "ws":
             return await WsTransport.connect(self.ws_host, self.ws_port)
-        # auto:优先 WebSocket(443 系 TLS 在受限网络存活率更高),
-        # 失败回退明文 TCP
+        # auto:先试 WebSocket(TLS 包裹规避 DPI/协议识别,并对冲非官方
+        # TCP 端点迁移),失败回退明文 TCP。
+        # ws 腿必须有独立子超时:防火墙静默 DROP 掉 SYN 时,连接尝试会
+        # 挂到 OS TCP 超时(20-130s)远超 connect_timeout,外层超时一到
+        # 整个 _dial 被取消,tcp 回退根本轮不到——auto 在它最该起作用的
+        # 受限网络里反而永远连不上
         try:
-            return await WsTransport.connect(self.ws_host, self.ws_port)
+            return await asyncio.wait_for(
+                WsTransport.connect(self.ws_host, self.ws_port),
+                timeout=max(1.0, self.connect_timeout / 2),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

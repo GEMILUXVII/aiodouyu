@@ -7,6 +7,8 @@
     from aiodouyu import DanmakuHub
 
     hub = DanmakuHub(types={"rss"}, emit_connection_events=True)
+    # 受限网络可让每个房间都走 WebSocket:transport 等参数直接透传
+    # hub = DanmakuHub(types={"rss"}, transport="auto")
     await hub.add(9999)
     await hub.add(288016)
     async for room_id, msg in hub:
@@ -51,8 +53,10 @@ class DanmakuHub:
         queue_maxsize: 聚合队列容量
         overflow: 队列满时的策略。"block" 反压(默认,不丢消息);
             "drop_oldest" 丢最旧保最新(适合只关心最新状态的消费方)
-        client_factory: 客户端工厂 ``fn(room_id) -> DanmakuClient``
-            (测试注入用);默认按上述参数创建
+        client_factory: 自定义客户端工厂 ``fn(room_id) -> DanmakuClient``;
+            默认工厂按上述参数与 ``client_kwargs`` 创建
+        **client_kwargs: 透传给每个 DanmakuClient 的其余参数,例如
+            ``transport="ws"``、``idle_timeout=180``、``backoff_max=30``
     """
 
     def __init__(
@@ -63,14 +67,25 @@ class DanmakuHub:
         queue_maxsize: int = 1024,
         overflow: str = "block",
         client_factory: Callable[[int], DanmakuClient] | None = None,
+        **client_kwargs,
     ) -> None:
         if overflow not in ("block", "drop_oldest"):
             raise ValueError(f'overflow 必须是 "block" 或 "drop_oldest",收到 {overflow!r}')
+        if overflow == "drop_oldest" and queue_maxsize < 1:
+            # asyncio.Queue 的 maxsize<=0 是无界语义:队列永不满,
+            # drop_oldest 永不生效,反而无上限堆积——与用户意图相反
+            raise ValueError(
+                "overflow='drop_oldest' 需要 queue_maxsize >= 1"
+                f"(收到 {queue_maxsize},该值表示无界队列)"
+            )
         self._overflow = overflow
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         self._factory = client_factory or (
             lambda rid: DanmakuClient(
-                rid, types=types, emit_connection_events=emit_connection_events
+                rid,
+                types=types,
+                emit_connection_events=emit_connection_events,
+                **client_kwargs,
             )
         )
         # room_id -> (client, pump_task)
