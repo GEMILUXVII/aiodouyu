@@ -484,6 +484,35 @@ async def test_close_while_consumer_suspended_in_loop_body(server):
     assert client.closed
 
 
+async def test_abandoned_client_is_gc_collectable(server):
+    """break 弃置且未 close 的客户端必须可被 GC 回收
+
+    回归:keepalive 协程帧强引用客户端时,任务经事件循环定时器强可达,
+    弃置的客户端+生成器图永久钉死,GC 终结器兜底永不触发。
+    """
+    import gc
+    import weakref
+
+    async def script(srv, reader, writer, index):
+        srv.send(writer, {"type": "rss", "ss": "1", "ivl": "0"})
+        await writer.drain()
+        await asyncio.sleep(10)
+
+    server.script = script
+    client = make_client(server)
+    async for _ in client:
+        break  # 弃置迭代器,不调用 close()
+
+    ref = weakref.ref(client)
+    del client
+    for _ in range(10):
+        gc.collect()
+        await asyncio.sleep(0.02)  # 让异步生成器终结器有机会运行
+        if ref() is None:
+            break
+    assert ref() is None, "弃置的客户端未被 GC 回收(对象图仍被强引用钉死)"
+
+
 async def test_backoff_delay_capped():
     """抖动不得使退避超过 backoff_max,大 attempt 不得溢出"""
     client = DanmakuClient(room_id=1, backoff_initial=1.0, backoff_max=60.0)

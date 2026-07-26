@@ -9,6 +9,7 @@ import logging
 import random
 import struct
 import time
+import weakref
 from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar, overload
 
@@ -27,6 +28,44 @@ EVENT_DISCONNECTED = "aiodouyu.disconnected"
 _LENGTH_STRUCT = struct.Struct("<I")
 
 _Handler = TypeVar("_Handler", bound=Callable[[dict[str, str]], Any])
+
+
+async def _keepalive_loop(ref: weakref.ref[DanmakuClient]) -> None:
+    """按协议周期发送 mrkl 心跳;空闲超时时中止连接触发重连
+
+    模块级函数 + weakref:睡眠期间不持有客户端强引用,客户端被弃置后
+    整个对象图可被 GC 回收(见 DanmakuClient._spawn_keepalive)。
+    """
+    try:
+        while True:
+            client = ref()
+            if client is None:
+                return
+            interval = client.keepalive_interval
+            idle_timeout = client.idle_timeout
+            room_id = client.room_id
+            del client  # 睡眠期间不持有强引用
+            await asyncio.sleep(interval)
+            client = ref()
+            if client is None:
+                return
+            if time.monotonic() - client._last_recv > idle_timeout:
+                logger.warning(
+                    "房间 %s 超过 %.0fs 未收到任何包，中止半开连接",
+                    room_id,
+                    idle_timeout,
+                )
+                client._abort()
+                return
+            await client._send({"type": "mrkl"})
+            del client
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # 发送失败说明连接已坏，中止让读循环尽快退出
+        client = ref()
+        if client is not None:
+            client._abort()
 
 
 class DanmakuClient:
@@ -147,8 +186,9 @@ class DanmakuClient:
     def __aiter__(self) -> AsyncIterator[dict[str, str]]:
         agen = self._iterate()
         if not self._iterating:
-            # 记录活跃迭代器,close() 时主动 aclose(),避免 break 弃置的
-            # 生成器把连接挂到 GC finalizer 才释放
+            # 记录活跃迭代器:close() 对从未驱动过的迭代器主动 aclose;
+            # break 弃置且未 close 的客户端依赖 GC 终结器兜底释放连接
+            # (keepalive 经 weakref 持有客户端,弃置图对 GC 可达性已断)
             self._agen = agen
         return agen
 
@@ -384,7 +424,7 @@ class DanmakuClient:
         except Exception:
             await self._teardown()
             raise
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        self._keepalive_task = self._spawn_keepalive()
 
     async def _send(self, fields: dict[str, object]) -> None:
         writer = self._writer
@@ -407,25 +447,16 @@ class DanmakuClient:
         self._last_recv = time.monotonic()
         return stt.loads(packet.extract_payload(body))
 
-    async def _keepalive_loop(self) -> None:
-        """按协议周期发送 mrkl 心跳；空闲超时时中止连接触发重连"""
-        try:
-            while True:
-                await asyncio.sleep(self.keepalive_interval)
-                if time.monotonic() - self._last_recv > self.idle_timeout:
-                    logger.warning(
-                        "房间 %s 超过 %.0fs 未收到任何包，中止半开连接",
-                        self.room_id,
-                        self.idle_timeout,
-                    )
-                    self._abort()
-                    return
-                await self._send({"type": "mrkl"})
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # 发送失败说明连接已坏，中止让读循环尽快退出
-            self._abort()
+    def _spawn_keepalive(self) -> asyncio.Task:
+        """创建心跳任务(经 weakref 持有客户端)
+
+        心跳任务经事件循环的 sleep 定时器强可达,若其协程帧强引用
+        客户端,被 ``break`` 弃置且未 close() 的客户端连同异步生成器
+        会被永久钉死——GC 终结器兜底永远无法触发,连接要等空闲超时
+        (最长约 165s)才释放。weakref 使弃置的客户端图可被 GC 回收,
+        生成器终结器得以运行 aclose 并及时拆除连接。
+        """
+        return asyncio.create_task(_keepalive_loop(weakref.ref(self)))
 
     def _abort(self) -> None:
         writer = self._writer
