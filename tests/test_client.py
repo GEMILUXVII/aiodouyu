@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import struct
 
 import pytest
 
@@ -11,97 +10,22 @@ from aiodouyu import (
     EVENT_DISCONNECTED,
     ConnectionClosed,
     DanmakuClient,
-    packet,
-    stt,
 )
+from aiodouyu.testing import FakeDanmakuServer
 
 pytestmark = pytest.mark.asyncio
 
 
-class FakeDanmakuServer:
-    """最小斗鱼弹幕服务器：校验握手、按脚本下发消息"""
-
-    def __init__(self):
-        self.server = None
-        self.port = None
-        self.connections = 0
-        self.received: list[dict[str, str]] = []
-        # 每次连接建立后调用：async fn(server, reader, writer, conn_index)
-        self.script = None
-        self._handler_tasks: set[asyncio.Task] = set()
-
-    async def start(self):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
-        self.port = self.server.sockets[0].getsockname()[1]
-
-    async def stop(self):
-        # 必须先取消 handler 任务：Python 3.13 起 wait_closed() 会等待
-        # 所有连接 handler 结束，而测试脚本里有长 sleep，不取消会把
-        # 每个用例的 teardown 拖慢数十秒
-        for task in list(self._handler_tasks):
-            task.cancel()
-        if self._handler_tasks:
-            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
-        if self.server:
-            self.server.close()
-            await self.server.wait_closed()
-
-    async def read_client_message(self, reader) -> dict[str, str]:
-        head = await reader.readexactly(4)
-        (length,) = struct.unpack("<I", head)
-        body = await reader.readexactly(length)
-        msg = stt.loads(packet.extract_payload(body))
-        self.received.append(msg)
-        return msg
-
-    def send(self, writer, fields: dict) -> None:
-        writer.write(packet.pack(stt.dumps(fields), msg_type=packet.MSG_TYPE_SERVER))
-
-    async def _handle(self, reader, writer):
-        task = asyncio.current_task()
-        if task is not None:
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
-        index = self.connections
-        self.connections += 1
-        try:
-            login = await self.read_client_message(reader)
-            assert login.get("type") == "loginreq"
-            join = await self.read_client_message(reader)
-            assert join.get("type") == "joingroup"
-            self.send(writer, {"type": "loginres", "userid": "0"})
-            await writer.drain()
-            if self.script:
-                await self.script(self, reader, writer, index)
-        except (asyncio.IncompleteReadError, ConnectionError):
-            pass
-        finally:
-            with contextlib.suppress(Exception):
-                writer.close()
-
-
 @pytest.fixture
 async def server():
-    srv = FakeDanmakuServer()
-    await srv.start()
-    yield srv
-    await srv.stop()
+    async with FakeDanmakuServer() as srv:
+        yield srv
 
 
 def make_client(server, **kwargs) -> DanmakuClient:
-    defaults = {
-        "room_id": 1234,
-        "host": "127.0.0.1",
-        "port": server.port,
-        "connect_timeout": 2.0,
-        "backoff_initial": 0.05,
-        "backoff_max": 0.2,
-        # 测试连接都是短命的,默认关掉秒断退避,免得拖慢重连类用例;
-        # 专测退避的用例自行覆盖
-        "min_uptime": 0.0,
-    }
-    defaults.update(kwargs)
-    return DanmakuClient(**defaults)
+    # 测试连接都是短命的,默认关掉秒断退避(min_uptime=0);
+    # 专测退避的用例自行覆盖 —— 语义由 testing.make_client 提供
+    return server.make_client(**kwargs)
 
 
 async def collect(client, count, timeout=5.0):
