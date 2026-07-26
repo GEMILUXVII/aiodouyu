@@ -3,6 +3,26 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
 0.x 阶段的兼容承诺见 README「版本与稳定性」。
 
+## [0.3.1] - 2026-07-27
+
+Hub 发版后对抗审查(含实测复现)的修复。
+
+### Fixed
+
+- **`remove()` 死锁**:`overflow="block"` 且消费者慢/缺席时,泵阻塞
+  在满队列的 `put` 上,`client.close()` 解除不了队列等待,
+  `remove()`/`close()` 永久挂死。现取消泵任务收尾
+- **`remove()` 被取消时孤儿化泵**:`client.close()` 含真实挂起点,
+  调用方在此被取消时 `CancelledError` 越过 `suppress(Exception)`,
+  而条目已被摘除——泵成为 `close()` 也回收不到的孤儿。清理移入
+  `finally`
+- **泵异常退出留下僵尸房**:`hub.rooms` 谎报该房受管、`add()` 以
+  "已存在"拒绝重加、消息静默停流。泵现在自摘条目(按任务身份判断,
+  不误删并发 re-add 的新条目)
+- 单轮消费语义强制(此前 `break` 后能否重入取决于 GC 时机);
+  `fetch_rooms(concurrency=0)` 不再静默永久挂起
+- 文档如实说明 block 模式的"不丢消息"限于稳态
+
 ## [0.3.0] - 2026-07-27
 
 ### Added

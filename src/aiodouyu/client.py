@@ -15,6 +15,12 @@ from typing import Any, TypeVar, overload
 
 from . import packet, stt
 from .exceptions import ConnectionClosed, ProtocolError
+from .transport import (
+    WS_DEFAULT_HOST,
+    WS_DEFAULT_PORT,
+    TcpTransport,
+    WsTransport,
+)
 
 __all__ = ["EVENT_CONNECTED", "EVENT_DISCONNECTED", "DanmakuClient"]
 
@@ -28,6 +34,15 @@ EVENT_DISCONNECTED = "aiodouyu.disconnected"
 _LENGTH_STRUCT = struct.Struct("<I")
 
 _Handler = TypeVar("_Handler", bound=Callable[[dict[str, str]], Any])
+
+
+def _abort_transport(obj: Any) -> None:
+    """收掉一条可能已建立的传输(取消/超时竞速的残留)"""
+    if obj is None or isinstance(obj, BaseException):
+        return
+    with contextlib.suppress(Exception):
+        obj.abort()
+        obj.close()
 
 
 async def _keepalive_loop(ref: weakref.ref[DanmakuClient]) -> None:
@@ -116,6 +131,9 @@ class DanmakuClient:
         backoff_initial: float = 1.0,
         backoff_max: float = 60.0,
         min_uptime: float = 5.0,
+        transport: str = "tcp",
+        ws_host: str = WS_DEFAULT_HOST,
+        ws_port: int = WS_DEFAULT_PORT,
         types: set[str] | None = None,
         emit_connection_events: bool = False,
     ) -> None:
@@ -134,6 +152,11 @@ class DanmakuClient:
             backoff_max: 重连退避上限秒数
             min_uptime: 连接最短存活秒数；低于此值的断开按连接失败计
                 （继续指数退避），防止服务端"接受即断开"时的热重连循环
+            transport: 传输方式。"tcp"（默认，明文 8601）、"ws"
+                （wss，网页端同款端点）、"auto"（先 ws 失败回退 tcp）。
+                TCP 8601 常被企业防火墙拦截，受限网络可用 ws/auto
+            ws_host/ws_port: WebSocket 端点（默认
+                wss://danmuproxy.douyu.com:8506）
             types: 只产出这些 type 的消息；None 表示产出全部。
                 连接生命周期伪事件不受此过滤器影响
             emit_connection_events: 是否产出 EVENT_CONNECTED /
@@ -159,11 +182,17 @@ class DanmakuClient:
         self.backoff_initial = backoff_initial
         self.backoff_max = backoff_max
         self.min_uptime = min_uptime
+        if transport not in ("tcp", "ws", "auto"):
+            raise ValueError(
+                f'transport 必须是 "tcp"/"ws"/"auto",收到 {transport!r}'
+            )
+        self.transport = transport
+        self.ws_host = ws_host
+        self.ws_port = ws_port
         self.types = set(types) if types is not None else None
         self.emit_connection_events = emit_connection_events
 
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._transport: TcpTransport | WsTransport | None = None
         self._keepalive_task: asyncio.Task | None = None
         self._closed = False
         self._close_event = asyncio.Event()
@@ -177,7 +206,7 @@ class DanmakuClient:
     @property
     def connected(self) -> bool:
         """当前是否有存活连接"""
-        return self._writer is not None and not self._writer.is_closing()
+        return self._transport is not None and not self._transport.is_closing
 
     @property
     def closed(self) -> bool:
@@ -363,16 +392,14 @@ class DanmakuClient:
             self._iterating = False
             await self._teardown()
 
-    async def _open_connection(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        """建立 TCP 连接;close() 可立即打断(抛 ConnectionClosed)
+    async def _open_transport(self):
+        """建立传输(TCP 或 WebSocket);close() 可立即打断
 
-        直接 wait_for(open_connection) 时 close() 只能设标志,连接尝试
-        本身无人取消,消费任务会滞留到 connect_timeout(网络故障 SYN
-        丢弃场景实测可达数秒)。这里让连接与 close 事件竞速。
+        直接 await 连接时 close() 只能设标志,连接尝试本身无人取消,
+        消费任务会滞留到 connect_timeout(网络故障 SYN 丢弃场景实测
+        可达数秒)。这里让连接与 close 事件竞速。
         """
-        connect_task = asyncio.ensure_future(
-            asyncio.open_connection(self.host, self.port)
-        )
+        connect_task = asyncio.ensure_future(self._dial())
         close_wait = asyncio.ensure_future(self._close_event.wait())
         try:
             done, _pending = await asyncio.wait(
@@ -389,13 +416,7 @@ class DanmakuClient:
             # 外层取消与连接完成竞速:侥幸建立的连接同样收掉。
             # 3.10/3.11.0-4/3.12.0 无 StreamWriter.__del__,不收掉会
             # 残留到服务端主动断开;新版本也只是退化为 GC 兜底+警告
-            leftover = results[0]
-            if isinstance(leftover, tuple):
-                with contextlib.suppress(Exception):
-                    transport = leftover[1].transport
-                    if transport is not None:
-                        transport.abort()
-                    leftover[1].close()
+            _abort_transport(results[0])
             raise
         finally:
             close_wait.cancel()
@@ -404,36 +425,44 @@ class DanmakuClient:
             exc = connect_task.exception()
             if exc is not None:
                 raise exc
-            reader, writer = connect_task.result()
+            transport = connect_task.result()
             if self._closed:
                 # close 与连接完成几乎同时:立刻收掉新连接
-                with contextlib.suppress(Exception):
-                    transport = writer.transport
-                    if transport is not None:
-                        transport.abort()
-                    writer.close()
+                _abort_transport(transport)
                 raise ConnectionClosed("客户端已关闭")
-            return reader, writer
+            return transport
 
         # 连接未完成:被 close 打断或超时
         connect_task.cancel()
         results = await asyncio.gather(connect_task, return_exceptions=True)
-        leftover = results[0]
-        if isinstance(leftover, tuple):
-            # cancel 与完成竞速中连接侥幸建立:同样收掉,避免泄漏
-            with contextlib.suppress(Exception):
-                leftover[1].transport.abort()
-                leftover[1].close()
+        _abort_transport(results[0])
         if self._closed:
             raise ConnectionClosed("客户端已关闭")
         raise TimeoutError(
             f"连接 {self.host}:{self.port} 超时({self.connect_timeout:.0f}s)"
         )
 
+    async def _dial(self):
+        """按 transport 设置建立一条传输;auto 先 ws 失败回退 tcp"""
+        mode = self.transport
+        if mode == "tcp":
+            return await TcpTransport.connect(self.host, self.port)
+        if mode == "ws":
+            return await WsTransport.connect(self.ws_host, self.ws_port)
+        # auto:优先 WebSocket(443 系 TLS 在受限网络存活率更高),
+        # 失败回退明文 TCP
+        try:
+            return await WsTransport.connect(self.ws_host, self.ws_port)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info(
+                "房间 %s WebSocket 传输不可用(%s),回退 TCP", self.room_id, exc
+            )
+            return await TcpTransport.connect(self.host, self.port)
+
     async def _connect(self) -> None:
-        reader, writer = await self._open_connection()
-        self._reader = reader
-        self._writer = writer
+        self._transport = await self._open_transport()
         self._last_recv = time.monotonic()
         try:
             await self._send({"type": "loginreq", "roomid": self.room_id})
@@ -446,23 +475,23 @@ class DanmakuClient:
         self._keepalive_task = self._spawn_keepalive()
 
     async def _send(self, fields: dict[str, object]) -> None:
-        writer = self._writer
-        if writer is None or writer.is_closing():
+        transport = self._transport
+        if transport is None or transport.is_closing:
             raise ConnectionClosed("连接不可用")
-        writer.write(packet.pack(stt.dumps(fields)))
-        await writer.drain()
+        transport.write(packet.pack(stt.dumps(fields)))
+        await transport.drain()
 
     async def _read_message(self) -> dict[str, str]:
-        reader = self._reader
-        if reader is None:
+        transport = self._transport
+        if transport is None:
             raise ConnectionClosed("连接不可用")
-        head = await reader.readexactly(_LENGTH_STRUCT.size)
+        head = await transport.read_exactly(_LENGTH_STRUCT.size)
         (length,) = _LENGTH_STRUCT.unpack(head)
         try:
             packet.validate_length(length)
         except packet.PacketError as exc:
             raise ProtocolError(str(exc)) from exc
-        body = await reader.readexactly(length)
+        body = await transport.read_exactly(length)
         self._last_recv = time.monotonic()
         return stt.loads(packet.extract_payload(body))
 
@@ -478,10 +507,9 @@ class DanmakuClient:
         return asyncio.create_task(_keepalive_loop(weakref.ref(self)))
 
     def _abort(self) -> None:
-        writer = self._writer
-        if writer is not None:
-            transport = writer.transport
-            if transport is not None:
+        transport = self._transport
+        if transport is not None:
+            with contextlib.suppress(Exception):
                 transport.abort()
 
     async def _teardown(self) -> None:
@@ -494,17 +522,14 @@ class DanmakuClient:
             # (直接 await task 再 except CancelledError 会把两种取消混为一谈,
             # 吞掉当前任务的取消请求)
             await asyncio.gather(task, return_exceptions=True)
-        writer = self._writer
-        self._reader = None
-        self._writer = None
-        if writer is not None:
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
             # 先 abort 立即释放连接(close 是 graceful 关闭,对端不配合
             # FIN 时可拖到 TCP 超时),再有界等待传输真正关闭,避免旧
             # socket 与新连接并存或进程退出时报 unclosed transport
             with contextlib.suppress(Exception):
-                transport = writer.transport
-                if transport is not None:
-                    transport.abort()
-                writer.close()
+                transport.abort()
+                transport.close()
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+                await asyncio.wait_for(transport.wait_closed(), timeout=1.0)

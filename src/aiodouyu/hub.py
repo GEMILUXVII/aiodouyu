@@ -19,7 +19,8 @@
 - 每房间一个内部 :class:`DanmakuClient`(自动重连、退避、空闲检测
   均在客户端层),单房故障只影响自身
 - 聚合队列有界:``overflow="block"`` 时慢消费者反压到各房间的 TCP
-  接收(不丢消息);``overflow="drop_oldest"`` 时丢最旧消息保新
+  接收(稳态不丢消息;``remove``/``close`` 时该房间在途的一条与队列
+  残留消息按语义丢弃);``overflow="drop_oldest"`` 时丢最旧消息保新
 - ``close()`` 关停全部房间与内部任务,迭代随之终止;与
   ``DanmakuClient`` 一样,一个 Hub 实例只支持一轮消费
 """
@@ -111,9 +112,16 @@ class DanmakuHub:
         if entry is None:
             return False
         client, task = entry
-        with contextlib.suppress(Exception):
-            await client.close()
-        task.cancel()
+        try:
+            with contextlib.suppress(Exception):
+                await client.close()
+        finally:
+            # 必须在 finally 里:client.close() 含真实挂起点(keepalive
+            # gather、最长 1s 的 wait_closed),调用方在此被取消时
+            # CancelledError 会越过 suppress(Exception) 直接传播,
+            # 而条目已被 pop——不 cancel 就成了 close() 也回收不到的
+            # 孤儿泵(block 模式下永久阻塞在满队列 put 上)
+            task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return True
 
@@ -143,15 +151,12 @@ class DanmakuHub:
             raise RuntimeError("同一 Hub 只允许一个消费迭代器")
         if self._closed:
             raise ConnectionClosed("Hub 已关闭")
-        self._iterating = True
-        try:
-            while True:
-                item = await self._queue.get()
-                if item is _SENTINEL or self._closed:
-                    return
-                yield item
-        finally:
-            self._iterating = False
+        self._iterating = True  # 单轮消费:标志不复位,break 后不可重入
+        while True:
+            item = await self._queue.get()
+            if item is _SENTINEL or self._closed:
+                return
+            yield item
 
     async def _put(self, item: tuple[int, dict[str, str]]) -> None:
         if self._overflow == "block":
@@ -185,5 +190,11 @@ class DanmakuHub:
             if not self._closed and room_id in self._rooms:
                 logger.error("Hub 房间 %s 泵异常退出: %s", room_id, e)
         finally:
+            # 自摘条目:泵异常退出后不留僵尸房(否则 hub.rooms 谎报
+            # 该房受管、add() 以"已存在"拒绝重加、消息静默停流)。
+            # 用任务身份判断,避免误删 remove 后并发 re-add 的新条目
+            entry = self._rooms.get(room_id)
+            if entry is not None and entry[1] is asyncio.current_task():
+                self._rooms.pop(room_id, None)
             with contextlib.suppress(Exception):
                 await client.close()

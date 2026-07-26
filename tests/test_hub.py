@@ -178,6 +178,107 @@ async def test_remove_unblocks_pump_stuck_on_full_queue():
     await asyncio.wait_for(hub.close(), timeout=2.0)
 
 
+async def test_dead_pump_is_not_a_zombie_room():
+    """泵异常退出后必须自摘条目,可被重新 add(回归:僵尸房静默停流)"""
+
+    class DyingClient:
+        def __init__(self, rid):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+        def __aiter__(self):
+            return self._it()
+
+        async def _it(self):
+            yield {"type": "chatmsg", "txt": "before death"}
+            raise ConnectionClosed("模拟 reconnect=False 的终止性断开")
+
+    hub = DanmakuHub(client_factory=DyingClient)
+    await hub.add(7)
+    await asyncio.sleep(0.1)
+    assert hub.rooms == set(), "泵已死,房间不应仍报告为受管"
+    assert await hub.add(7) is True, "死泵后必须允许重新 add"
+    await hub.close()
+
+
+async def test_remove_cancelled_during_close_does_not_orphan_pump():
+    """remove 在 client.close 挂起点被取消时,泵不得成为孤儿(回归)"""
+
+    pump_started = asyncio.Event()
+
+    class SlowCloseClient:
+        def __init__(self, rid):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+            await asyncio.sleep(0.5)  # 真实 close 含 keepalive/wait_closed
+
+        def __aiter__(self):
+            return self._it()
+
+        async def _it(self):
+            pump_started.set()
+            while True:
+                yield {"type": "chatmsg", "txt": "x"}
+                await asyncio.sleep(0)
+
+    hub = DanmakuHub(queue_maxsize=1, client_factory=SlowCloseClient)
+    await hub.add(8)
+    await asyncio.wait_for(pump_started.wait(), 2)
+    await asyncio.sleep(0.1)  # 泵阻塞在满队列 put 上
+
+    entry_task = hub._rooms[8][1]
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(hub.remove(8), timeout=0.1)  # 在 close 中被取消
+    # 泵的 finally 里还要 await 这个假客户端的慢 close(0.5s),等它跑完
+    await asyncio.wait_for(
+        asyncio.gather(entry_task, return_exceptions=True), timeout=3
+    )
+    assert entry_task.cancelled() or entry_task.done(), "泵未被回收,成了孤儿"
+    await asyncio.wait_for(hub.close(), timeout=2)
+
+
+async def test_block_mode_lossless_with_slow_consumer():
+    """block 模式的核心卖点:慢消费者不丢消息"""
+
+    total = 50
+
+    class CountingClient:
+        def __init__(self, rid):
+            self.closed = False
+            self._done = asyncio.Event()
+
+        async def close(self):
+            self.closed = True
+            self._done.set()
+
+        def __aiter__(self):
+            return self._it()
+
+        async def _it(self):
+            for i in range(total):
+                yield {"type": "chatmsg", "txt": str(i)}
+            await self._done.wait()  # 保持迭代器存活直到 close
+
+    hub = DanmakuHub(queue_maxsize=2, client_factory=CountingClient)
+    await hub.add(9)
+    got = []
+
+    async def slow_consume():
+        async for _, msg in hub:
+            got.append(int(msg["txt"]))
+            await asyncio.sleep(0.002)  # 慢消费者
+            if len(got) == total:
+                return
+
+    await asyncio.wait_for(slow_consume(), 10)
+    assert got == list(range(total))  # 一条不丢、保序
+    await hub.close()
+
+
 async def test_invalid_overflow():
     with pytest.raises(ValueError):
         DanmakuHub(overflow="bogus")

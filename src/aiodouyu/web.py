@@ -25,6 +25,7 @@ import http.client
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -277,7 +278,7 @@ async def fetch_room(
 
 
 async def fetch_rooms(
-    room_ids,
+    room_ids: Iterable[int],
     *,
     source: Source = "auto",
     timeout: float = 10.0,
@@ -297,6 +298,9 @@ async def fetch_rooms(
     Returns:
         ``{room_id: RoomInfo | Exception}``
     """
+    if concurrency < 1:
+        # Semaphore(0) 会永久挂起且无任何报错;负数的库内报错也难懂
+        raise ValueError(f"concurrency 必须 >= 1,收到 {concurrency}")
     semaphore = asyncio.Semaphore(concurrency)
 
     async def one(rid: int) -> tuple[int, RoomInfo | Exception]:
