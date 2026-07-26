@@ -1,8 +1,15 @@
 # aiodouyu
 
+[![ci](https://github.com/GEMILUXVII/aiodouyu/actions/workflows/ci.yml/badge.svg)](https://github.com/GEMILUXVII/aiodouyu/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/aiodouyu)](https://pypi.org/project/aiodouyu/)
+[![Python](https://img.shields.io/pypi/pyversions/aiodouyu)](https://pypi.org/project/aiodouyu/)
+[![Downloads](https://img.shields.io/pypi/dm/aiodouyu)](https://pypi.org/project/aiodouyu/)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](#为什么有这个库)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/GEMILUXVII/aiodouyu/blob/master/LICENSE)
+
 斗鱼弹幕与房间状态的 **asyncio** 客户端库 —— 零依赖、自动重连、干净停止。
 
-[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [协议说明](#协议说明) | [局限与路线图](#局限与路线图)
+[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
 
 ## 为什么有这个库
 
@@ -129,6 +136,35 @@ async for msg in client:
         print("状态变化:", msg.get("ss") == "1" and msg.get("ivl") == "0")
 ```
 
+## 录制与回放
+
+把真实消息流录成 JSONL,离线回放给完全相同的消费代码——测试夹具、
+issue 复现(协议漂移报告请附 dump)、弹幕数据分析都用它:
+
+```bash
+python -m aiodouyu 9999 --record dump.jsonl --duration 60
+```
+
+> `--record` 录制**完整**消息流(`--types` 只影响控制台打印),
+> 语料才不会系统性缺字段。文件首行是版本化 header,其后每行
+> `{"ts": ..., "msg": {...}}`。
+
+```python
+from aiodouyu import replay
+
+# 即刻回放(默认,测试主场景)
+async for msg in replay("dump.jsonl"):
+    ...  # msg 与 DanmakuClient 产出完全同构
+
+# 按原速回放,但单次空窗最多睡 1 秒(真实语料含 45s+ 心跳空窗)
+async for msg in replay("dump.jsonl", speed=1.0, max_gap=1.0):
+    ...
+
+# types 过滤与连接伪事件豁免的语义与 DanmakuClient 一致
+async for msg in replay("dump.jsonl", types={"rss"}):
+    ...
+```
+
 ## 协议说明
 
 连接 `danmuproxy.douyu.com:8601`（TCP），STT 序列化（`@=` 键值、`/` 分隔、
@@ -148,17 +184,41 @@ async for msg in client:
 - `web` 模块的 betard 数据源是网页端内部接口，字段可能随时变更
   （`auto` 模式会自动回退到公开 API）
 
-路线图：WebSocket 传输、常见消息类型的 typed model。欢迎 issue / PR。
+路线图：0.2 typed models（语料采集中，录制/回放已就绪）与
+`aiodouyu.testing` 公开测试工具；0.3 多房间管理器；0.4 WebSocket 传输。
+欢迎 issue / PR（贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
+
+## 版本与稳定性
+
+本库处于 0.x 阶段，遵循如下承诺（自 0.2 起生效）：
+
+- **补丁版本（0.y.Z）永不破坏 API**；破坏性变更只出现在次版本（0.Y.0）。
+  下游建议以 `aiodouyu~=0.y.z` 钉住次版本
+- **公共 API 面** = 包根与 `packet`/`stt`/`web`/`replay` 各自的 `__all__`、
+  `EVENT_*` 常量值及"连接伪事件不受 types 过滤"的行为、异常继承关系
+  （`RoomNotFound ⊂ ApiError ⊂ AiodouyuError`）、`DanmakuClient`/`fetch_room`/
+  `replay` 的关键字签名
+- **不承诺**：斗鱼协议的 dict 字段与服务端行为（协议漂移出适配性次版本，
+  不视为库的破坏）；未来 typed models 的字段**增补**视为兼容
+- 弃用流程：先在某个 0.Y 版本标记 `DeprecationWarning`，至少隔一个次
+  版本后才移除
+
+> 下游示例：AstrBot 插件 astrbot_plugin_douyu_live 以 `>=0.1.2,<0.2`
+> 依赖本库。
 
 ## English
 
 Asyncio client for Douyu (斗鱼) live-stream danmaku and room-status events.
-Zero runtime dependencies, automatic reconnection with exponential backoff,
-idle-timeout detection for half-open connections, and clean shutdown.
-Consume messages via `async for` or callback registration. A zero-dependency
-`web` module (`fetch_room`) retrieves room metadata and live status over HTTP
-for state calibration after reconnects. The barrage protocol is an unofficial
-Douyu interface and may change without notice.
+**Zero runtime dependencies**, automatic reconnection with exponential
+backoff, idle-timeout detection for half-open connections, and clean
+shutdown. Consume messages via `async for` or callback registration. A
+zero-dependency `web` module (`fetch_room`) retrieves room metadata and live
+status over HTTP for state calibration after reconnects, and `replay()`
+replays JSONL dumps recorded with `python -m aiodouyu <rid> --record` as a
+stream identical in shape to the live client — ideal for tests and issue
+reproduction. Patch releases never break the API (see 版本与稳定性). The
+barrage protocol is an unofficial Douyu interface and may change without
+notice.
 
 ```python
 async with DanmakuClient(room_id=9999) as client:

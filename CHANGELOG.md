@@ -1,6 +1,28 @@
 # Changelog
 
-本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
+0.x 阶段的兼容承诺见 README「版本与稳定性」。
+
+## [Unreleased]
+
+### Added
+
+- **录制/回放**:`python -m aiodouyu <rid> --record dump.jsonl` 把完整
+  消息流(不受 `--types` 影响)录制为版本化 JSONL;`aiodouyu.replay()`
+  以与 `DanmakuClient` 完全同构的流回放,支持 `speed`(倍速)、
+  `max_gap`(空窗钳制)、`types`(伪事件豁免,契约与客户端一致)
+- 社区基建:CONTRIBUTING、issue 模板(bug/protocol_drift,要求附
+  `--record` dump)、README 徽章与 0.x 稳定性政策、Release notes
+  自动化(CHANGELOG 为唯一事实源)
+- CI:Python 3.14 矩阵、uvloop 冒烟任务;供应链加固(action SHA pin +
+  Dependabot、最小权限、显式 PyPI attestations)
+
+### Fixed
+
+- `_open_connection` 外层取消与连接完成竞速时,侥幸建立的连接被
+  立即收掉而非泄漏
+
+## [0.1.2] - 2026-07-27
 
 ## [0.1.2] - 2026-07-27
 

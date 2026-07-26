@@ -1,0 +1,50 @@
+name: 协议漂移报告
+description: 报告斗鱼弹幕协议变更 / 字段漂移(端点迁移、字段新增/消失/语义变化等)
+title: "[Protocol] "
+labels: ["protocol-drift"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        斗鱼弹幕协议是非官方接口,可能随时变更。此模板专用于报告协议层
+        的实际变化,抓包证据是定位的关键,请务必附上。
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 观察到的协议变化(哪个消息类型、哪个字段、行为如何变化,从何时开始)
+      placeholder: |
+        例如:约 7 月 25 日起,chatmsg 消息中不再出现 xxx 字段 /
+        rss 消息新增 yyy 字段 / 握手在 zzz 步骤被服务器断开 ...
+    validations:
+      required: true
+  - type: input
+    id: room-id
+    attributes:
+      label: 房间号
+      description: 能观察到该现象的斗鱼房间号(最好附上是否稳定复现)
+      placeholder: "例如 9999"
+    validations:
+      required: true
+  - type: textarea
+    id: dump
+    attributes:
+      label: 抓包 dump 片段
+      description: |
+        运行以下命令并粘贴 dump.jsonl 中能体现该变化的片段:
+
+        `python -m aiodouyu <rid> --record dump.jsonl --duration 60`
+
+        注意:dump 中可能包含观众昵称、UID 等个人信息,粘贴前请自行
+        脱敏(打码或替换),只保留与协议变化相关的字段。
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: aiodouyu 版本
+      description: "`pip show aiodouyu` 或 `python -c \"import aiodouyu; print(aiodouyu.__version__)\"`"
+      placeholder: "例如 0.1.2"
+    validations:
+      required: true

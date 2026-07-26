@@ -1,0 +1,63 @@
+name: Bug 报告
+description: 报告 aiodouyu 的错误行为(崩溃、异常、行为不符合文档等)
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。请尽量完整填写以下信息,信息越全定位越快。
+        协议字段变更/漂移类问题请改用「协议漂移报告」模板。
+  - type: input
+    id: version
+    attributes:
+      label: aiodouyu 版本
+      description: "`pip show aiodouyu` 或 `python -c \"import aiodouyu; print(aiodouyu.__version__)\"`"
+      placeholder: "例如 0.1.2"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python 版本
+      description: "`python --version` 的输出"
+      placeholder: "例如 3.12.4"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: "例如 Windows 11 / Ubuntu 24.04 / macOS 15"
+    validations:
+      required: true
+  - type: input
+    id: room-id
+    attributes:
+      label: 房间号
+      description: 触发问题的斗鱼房间号(与房间无关可填「无关」)
+      placeholder: "例如 9999"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 最小可复现代码或命令,以及预期行为与实际行为
+      placeholder: |
+        1. 运行以下代码 / 命令 ...
+        2. 预期 ...
+        3. 实际 ...(附完整 traceback)
+    validations:
+      required: true
+  - type: textarea
+    id: dump
+    attributes:
+      label: 抓包片段(可选)
+      description: |
+        若问题与消息解析/协议行为有关,建议附上
+        `python -m aiodouyu <rid> --record dump.jsonl` 生成的相关片段。
+        注意:片段可能包含观众昵称、UID 等信息,粘贴前请自行脱敏。
+      render: text
+    validations:
+      required: false
