@@ -383,7 +383,19 @@ class DanmakuClient:
         except asyncio.CancelledError:
             connect_task.cancel()
             close_wait.cancel()
-            await asyncio.gather(connect_task, close_wait, return_exceptions=True)
+            results = await asyncio.gather(
+                connect_task, close_wait, return_exceptions=True
+            )
+            # 外层取消与连接完成竞速:侥幸建立的连接同样收掉。
+            # 3.10/3.11.0-4/3.12.0 无 StreamWriter.__del__,不收掉会
+            # 残留到服务端主动断开;新版本也只是退化为 GC 兜底+警告
+            leftover = results[0]
+            if isinstance(leftover, tuple):
+                with contextlib.suppress(Exception):
+                    transport = leftover[1].transport
+                    if transport is not None:
+                        transport.abort()
+                    leftover[1].close()
             raise
         finally:
             close_wait.cancel()

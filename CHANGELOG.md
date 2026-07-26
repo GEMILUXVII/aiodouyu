@@ -26,9 +26,9 @@
 - `close()` 从其他任务调用时不再与消费方的 `__anext__` 竞争
   (旧实现对活跃迭代器 `aclose()`,可抛
   `RuntimeError('generator is already running')`)
-- `fetch_room` 异常契约补漏:未知 charset(`LookupError`)、
-  非标 JSON `Infinity`(`OverflowError`)、`http.client` 传输异常
-  均正确映射为 `ApiError`
+- `fetch_room` 异常契约补漏:未知 charset(`LookupError`)与
+  `http.client` 传输异常映射为 `ApiError`;非标 JSON `Infinity`
+  不再导致 `OverflowError` 穿透,数值字段安全降级为 `None`
 - open API 错误映射修正:仅 `error=101` 判为 `RoomNotFound`,
   其余非零码与畸形响应判为 `ApiError`(限流不再被误报为房间不存在)
 - CLI:可预期失败输出一行错误而非 traceback;stderr 同步 UTF-8;

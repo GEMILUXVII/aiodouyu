@@ -67,7 +67,10 @@ class RoomInfo:
             None 表示数据源(open)无法判定
         avatar_url: 主播头像 URL
         cover_url: 直播间封面 URL
-        started_at: 本场开播时间(epoch 秒);未开播或数据源缺失时为 None
+        started_at: 本场开播时间(epoch 秒)。未开播或数据源缺失时为
+            None;注意视频轮播时(is_live=False, is_loop=True)携带的是
+            轮播场次的 show_time——判定在播请用 is_live,勿用
+            ``started_at is not None``
         online: 热度值(仅 open 源提供)
         source: 本快照来自哪个数据源("betard" / "open")
         raw: 数据源原始房间对象,未归一化字段可从这里取
@@ -237,7 +240,8 @@ async def fetch_room(
     Raises:
         RoomNotFound: 房间不存在
         ApiError: 网络失败或响应无法解析
-        ValueError: room_id 非正整数
+        TypeError: room_id 不是 int
+        ValueError: room_id 非正整数或 source 非法
     """
     if isinstance(room_id, bool) or not isinstance(room_id, int):
         raise TypeError(
