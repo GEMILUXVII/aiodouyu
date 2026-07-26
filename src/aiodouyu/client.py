@@ -193,9 +193,12 @@ class DanmakuClient:
         self._close_event.set()
         agen = self._agen
         self._agen = None
-        if agen is not None:
-            # 迭代器可能正被消费方驱动(aclose 抛 RuntimeError),此时
-            # 由下方 _teardown 中止连接、令其自行退出即可
+        if agen is not None and not self._iterating:
+            # 只对从未被驱动的迭代器 aclose。正被消费的迭代器不能在此
+            # aclose:其 finally 含真实挂起点,终结进行期间消费方若调用
+            # __anext__ 会撞上 "generator is already running" 的
+            # RuntimeError;_closed 标志 + 下方 _teardown 中止连接已足以
+            # 令其在下一次驱动时干净地 StopAsyncIteration
             with contextlib.suppress(Exception):
                 aclose = getattr(agen, "aclose", None)
                 if aclose is not None:

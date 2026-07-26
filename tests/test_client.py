@@ -415,6 +415,47 @@ async def test_short_lived_connections_backoff(server):
     assert server.connections <= 2
 
 
+async def test_close_while_consumer_suspended_in_loop_body(server):
+    """消费方挂起在循环体内时另一任务 close():迭代必须干净结束
+
+    回归:旧实现对活跃迭代器 await aclose(),其 finally 的挂起点与
+    消费方下一次 __anext__ 竞争,抛 RuntimeError('generator is
+    already running')。
+    """
+
+    async def script(srv, reader, writer, index):
+        for _ in range(5):
+            srv.send(writer, {"type": "chatmsg", "txt": "x"})
+        await writer.drain()
+        await asyncio.sleep(10)
+
+    server.script = script
+    client = make_client(server)
+    in_body = asyncio.Event()
+    release = asyncio.Event()
+    errors: list[BaseException] = []
+
+    async def consume():
+        try:
+            async for _ in client:
+                in_body.set()
+                await release.wait()  # 挂起在循环体内,生成器停在 yield
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(in_body.wait(), 5)
+    close_task = asyncio.create_task(client.close())
+    # 让 close() 推进若干 tick(旧实现此时 aclose 正卡在生成器 finally)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    release.set()  # 消费方恢复并调用 __anext__
+    await asyncio.wait_for(task, 5)
+    await asyncio.wait_for(close_task, 5)
+    assert errors == []
+    assert client.closed
+
+
 async def test_backoff_delay_capped():
     """抖动不得使退避超过 backoff_max,大 attempt 不得溢出"""
     client = DanmakuClient(room_id=1, backoff_initial=1.0, backoff_max=60.0)
