@@ -3,10 +3,19 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
 0.x 阶段的兼容承诺见 README「版本与稳定性」。
 
-## [Unreleased]
+## [0.2.0] - 2026-07-27
 
 ### Added
 
+- **typed models**(`aiodouyu.models`):chatmsg/dgb/uenter/rss 的
+  frozen dataclass 与 `parse()` 纯函数。可选层,默认行为不变;宽松
+  解析(缺失/畸形字段得 None,永不抛异常),保留 `raw` 逃生舱。
+  字段基于 1600+ 条真实抓包语料定稿(dgb 数量字段是 `gfcnt`、礼物名
+  `gfn` 在消息内、粉丝牌三元组建模——实测跨房牌是常态);rss 语义
+  与生产状态机对齐(`is_live = ss=='1' and ivl=='0'`)
+- **公开测试基建**(`aiodouyu.testing.FakeDanmakuServer`):可脚本化
+  的离线假弹幕服务器,含 async context manager 与 `make_client()`;
+  库自身测试套件即第一个客户
 - **录制/回放**:`python -m aiodouyu <rid> --record dump.jsonl` 把完整
   消息流(不受 `--types` 影响)录制为版本化 JSONL;`aiodouyu.replay()`
   以与 `DanmakuClient` 完全同构的流回放,支持 `speed`(倍速)、

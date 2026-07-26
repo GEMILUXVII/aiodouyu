@@ -9,7 +9,7 @@
 
 斗鱼弹幕与房间状态的 **asyncio** 客户端库 —— 零依赖、自动重连、干净停止。
 
-[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
+[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
 
 ## 为什么有这个库
 
@@ -136,6 +136,29 @@ async for msg in client:
         print("状态变化:", msg.get("ss") == "1" and msg.get("ivl") == "0")
 ```
 
+## 类型化模型（可选）
+
+不想记 `nn`/`txt`/`gfid` 这些协议字段名？`models.parse()` 把常见消息
+转成带类型字段的 dataclass（可选层，默认行为不变；字段缺失/畸形得
+`None` 永不抛异常，原始字典始终在 `.raw`）：
+
+```python
+from aiodouyu import models
+
+async for msg in client:
+    parsed = models.parse(msg)          # 未识别类型返回 None
+    match parsed:
+        case models.ChatMsg():
+            print(parsed.nickname, parsed.text)
+        case models.Gift():
+            print(parsed.nickname, "送出", parsed.gift_name, "x", parsed.count)
+        case models.RoomStatus():
+            print("开播" if parsed.is_live else "下播/轮播")
+```
+
+> 粉丝牌是三元组 `badge_name/badge_level/badge_room_id`——实测跨房
+> 粉丝牌是常态（`badge_room_id` 常 ≠ 当前房间），展示时请一起判断。
+
 ## 录制与回放
 
 把真实消息流录成 JSONL,离线回放给完全相同的消费代码——测试夹具、
@@ -180,12 +203,10 @@ async for msg in replay("dump.jsonl", types={"rss"}):
 
 - STT 嵌套结构（如 ranklist 的分组数据）不展开，值以原始字符串返回
 - 仅 TCP 端点；WebSocket 端点（`wss://danmuproxy.douyu.com:850x`）未实现
-- 弹幕消息字段无类型化模型，以 `dict[str, str]` 返回
 - `web` 模块的 betard 数据源是网页端内部接口，字段可能随时变更
   （`auto` 模式会自动回退到公开 API）
 
-路线图：0.2 typed models（语料采集中，录制/回放已就绪）与
-`aiodouyu.testing` 公开测试工具；0.3 多房间管理器；0.4 WebSocket 传输。
+路线图：0.3 多房间管理器与批量 `fetch_rooms`；0.4 WebSocket 传输。
 欢迎 issue / PR（贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 
 ## 版本与稳定性
