@@ -9,7 +9,7 @@
 
 斗鱼弹幕与房间状态的 **asyncio** 客户端库 —— 零依赖、自动重连、干净停止。
 
-[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [多房间](#多房间danmakuhub) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
+[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [多房间](#多房间danmakuhub) | [传输方式](#传输方式tcp--websocket) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
 
 ## 为什么有这个库
 
@@ -210,6 +210,25 @@ async for msg in replay("dump.jsonl", types={"rss"}):
     ...
 ```
 
+## 传输方式(TCP / WebSocket)
+
+默认走明文 TCP(`danmuproxy.douyu.com:8601`)。该端口常被企业防火墙
+或部分云出口拦截,受限网络可切到网页端同款的 WebSocket 端点:
+
+```python
+DanmakuClient(9999, transport="ws")     # wss://danmuproxy.douyu.com:8506
+DanmakuClient(9999, transport="auto")   # 先 ws,失败回退 tcp
+```
+
+WebSocket 客户端是手写的最小 RFC 6455 实现(仅客户端角色、二进制帧、
+零扩展协商),**零依赖不变**;弹幕协议在两种传输上完全一致,ping/pong
+在传输层透明处理。
+
+> 实测细节:斗鱼 wss 端点只提供 `AES256-GCM-SHA384`(RSA 密钥交换),
+> 现代 OpenSSL 默认的 SECLEVEL=2 会直接拒绝握手。库内置的 TLS 上下文
+> 只把密码套件安全级别降到 1,**证书与主机名校验保持开启**;需要自定
+> 义时传 `ssl_context`。
+
 ## 协议说明
 
 连接 `danmuproxy.douyu.com:8601`（TCP），STT 序列化（`@=` 键值、`/` 分隔、
@@ -224,11 +243,10 @@ async for msg in replay("dump.jsonl", types={"rss"}):
 当前局限：
 
 - STT 嵌套结构（如 ranklist 的分组数据）不展开，值以原始字符串返回
-- 仅 TCP 端点；WebSocket 端点（`wss://danmuproxy.douyu.com:850x`）未实现
 - `web` 模块的 betard 数据源是网页端内部接口，字段可能随时变更
   （`auto` 模式会自动回退到公开 API）
 
-路线图：0.4 WebSocket 传输。
+路线图：核心能力已完备,后续按 issue 与实际需求演进。
 欢迎 issue / PR（贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 
 ## 版本与稳定性

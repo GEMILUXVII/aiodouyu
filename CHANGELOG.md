@@ -3,6 +3,26 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
 0.x 阶段的兼容承诺见 README「版本与稳定性」。
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- **WebSocket 传输**:`DanmakuClient(..., transport="ws"|"auto")` 走
+  网页端同款 `wss://danmuproxy.douyu.com:8506`。手写最小 RFC 6455
+  客户端(仅客户端角色、二进制帧、零扩展协商、ping/pong 传输层透明
+  处理),**零运行时依赖不变**。动机:TCP 8601 常被企业防火墙拦截,
+  且双传输对冲非官方端点再次迁移的风险
+  - 内置 TLS 上下文放宽密码套件安全级别(斗鱼端点只提供
+    `AES256-GCM-SHA384`,SECLEVEL=2 会拒绝握手),证书与主机名校验
+    保持开启;可传 `ssl_context` 覆盖
+  - `transport="auto"` 先 ws 失败回退 tcp;默认仍是 `"tcp"`,
+    行为与旧版完全一致
+- 传输层抽象(`aiodouyu.transport`):`TcpTransport`/`WsTransport`
+  对客户端暴露同一字节流接口,弹幕成帧逻辑与传输解耦
+
+> 注:0.3.1 的发布包已包含本模块代码(默认 `transport="tcp"` 时完全
+> 惰性,行为无变化),文档与公开导出自 0.4.0 起生效。
+
 ## [0.3.1] - 2026-07-27
 
 Hub 发版后对抗审查(含实测复现)的修复。

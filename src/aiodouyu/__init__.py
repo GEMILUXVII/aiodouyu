@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 
-from . import models, packet, stt, web
+from . import models, packet, stt, transport, web
 from .client import EVENT_CONNECTED, EVENT_DISCONNECTED, DanmakuClient
 from .exceptions import (
     AiodouyuError,
@@ -36,7 +36,7 @@ from .hub import DanmakuHub
 from .replay import replay
 from .web import RoomInfo, fetch_room, fetch_rooms, resolve_room_id
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "EVENT_CONNECTED",
@@ -57,6 +57,7 @@ __all__ = [
     "replay",
     "resolve_room_id",
     "stt",
+    "transport",
     "web",
 ]
 
