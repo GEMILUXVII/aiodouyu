@@ -16,13 +16,17 @@ from __future__ import annotations
 
 import struct
 
+from .exceptions import AiodouyuError
+
 __all__ = [
     "HEADER_TAIL_LENGTH",
     "MAX_PACKET_SIZE",
     "MSG_TYPE_CLIENT",
     "MSG_TYPE_SERVER",
+    "PacketError",
     "extract_payload",
     "pack",
+    "validate_length",
 ]
 
 MSG_TYPE_CLIENT = 689
@@ -37,8 +41,12 @@ MAX_PACKET_SIZE = 1 << 20
 _HEADER = struct.Struct("<IIHBB")
 
 
-class PacketError(ValueError):
-    """包结构非法"""
+class PacketError(AiodouyuError, ValueError):
+    """包结构非法
+
+    同时继承 AiodouyuError(与库其余异常同族,裸用 packet 模块时
+    except AiodouyuError 可捕获)与 ValueError(保持向后兼容)。
+    """
 
 
 def pack(payload: str, msg_type: int = MSG_TYPE_CLIENT) -> bytes:

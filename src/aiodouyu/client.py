@@ -10,7 +10,7 @@ import random
 import struct
 import time
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from . import packet, stt
 from .exceptions import ConnectionClosed, ProtocolError
@@ -25,6 +25,8 @@ EVENT_CONNECTED = "aiodouyu.connected"
 EVENT_DISCONNECTED = "aiodouyu.disconnected"
 
 _LENGTH_STRUCT = struct.Struct("<I")
+
+_Handler = TypeVar("_Handler", bound=Callable[[dict[str, str]], Any])
 
 
 class DanmakuClient:
@@ -150,9 +152,15 @@ class DanmakuClient:
             self._agen = agen
         return agen
 
+    @overload
+    def on(self, msg_type: str) -> Callable[[_Handler], _Handler]: ...
+
+    @overload
+    def on(self, msg_type: str, handler: _Handler) -> _Handler: ...
+
     def on(
         self, msg_type: str, handler: Callable[[dict[str, str]], Any] | None = None
-    ):
+    ) -> Any:
         """注册消息回调（可用作装饰器）
 
         Args:
