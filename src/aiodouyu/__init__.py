@@ -1,0 +1,53 @@
+"""aiodouyu - 斗鱼弹幕 asyncio 客户端库
+
+连接斗鱼弹幕服务器，以异步迭代或回调方式消费房间消息
+（开播状态 rss、弹幕 chatmsg、礼物 dgb 等）。
+
+快速上手::
+
+    import asyncio
+    from aiodouyu import DanmakuClient
+
+    async def main():
+        async with DanmakuClient(room_id=9999) as client:
+            async for msg in client:
+                print(msg.get("type"), msg)
+
+    asyncio.run(main())
+"""
+
+from __future__ import annotations
+
+import logging
+
+from . import packet, stt, web
+from .client import EVENT_CONNECTED, EVENT_DISCONNECTED, DanmakuClient
+from .exceptions import (
+    AiodouyuError,
+    ApiError,
+    ConnectionClosed,
+    ProtocolError,
+    RoomNotFound,
+)
+from .web import RoomInfo, fetch_room
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "EVENT_CONNECTED",
+    "EVENT_DISCONNECTED",
+    "AiodouyuError",
+    "ApiError",
+    "ConnectionClosed",
+    "DanmakuClient",
+    "ProtocolError",
+    "RoomInfo",
+    "RoomNotFound",
+    "__version__",
+    "fetch_room",
+    "packet",
+    "stt",
+    "web",
+]
+
+logging.getLogger("aiodouyu").addHandler(logging.NullHandler())

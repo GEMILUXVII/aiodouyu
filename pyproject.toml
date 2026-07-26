@@ -1,0 +1,65 @@
+[project]
+name = "aiodouyu"
+dynamic = ["version"]
+description = "Asyncio client for Douyu live danmaku & room status / 斗鱼弹幕与房间状态 asyncio 客户端"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "GEMILUXVII" }]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["douyu", "danmaku", "asyncio", "live", "barrage", "斗鱼", "弹幕"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Chat",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/GEMILUXVII/aiodouyu"
+Repository = "https://github.com/GEMILUXVII/aiodouyu"
+Issues = "https://github.com/GEMILUXVII/aiodouyu/issues"
+Changelog = "https://github.com/GEMILUXVII/aiodouyu/blob/master/CHANGELOG.md"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/aiodouyu/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiodouyu"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+  "F",     # Pyflakes
+  "W",     # pycodestyle warnings
+  "E",     # pycodestyle errors
+  "ASYNC", # flake8-async
+  "C4",    # flake8-comprehensions
+  "Q",     # flake8-quotes
+  "I",     # import-order
+  "UP",    # pyupgrade
+]
+ignore = ["E501"]
