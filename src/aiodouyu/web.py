@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -192,8 +193,16 @@ async def _fetch(url: str, headers: dict[str, str], timeout: float) -> Any:
         if exc.code == 404:
             raise RoomNotFound(f"房间不存在: {url} 返回 HTTP 404") from exc
         raise ApiError(f"请求 {url} 失败: HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        # ValueError 覆盖 json.JSONDecodeError 与畸形 URL
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
+        # ValueError 覆盖 json.JSONDecodeError 与畸形 URL;
+        # HTTPException 覆盖 IncompleteRead/LineTooLong 等非 OSError 的
+        # 传输层异常(RemoteDisconnected 继承 OSError,其余不继承)
         raise ApiError(f"请求 {url} 失败: {exc}") from exc
 
 

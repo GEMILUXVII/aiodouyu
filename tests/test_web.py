@@ -198,6 +198,17 @@ async def test_http_404_maps_to_room_not_found(monkeypatch):
         await web.fetch_room(999999999, source="auto")
 
 
+async def test_http_client_exceptions_map_to_api_error(monkeypatch):
+    import http.client
+
+    def raise_incomplete_read(url, headers, timeout):
+        raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(web, "_http_get_json", raise_incomplete_read)
+    with pytest.raises(ApiError):
+        await web.fetch_room(9999, source="open")
+
+
 async def test_http_500_maps_to_api_error(monkeypatch):
     import io
     import urllib.error
