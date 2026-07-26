@@ -100,13 +100,20 @@ class DanmakuHub:
         return True
 
     async def remove(self, room_id: int) -> bool:
-        """移除房间(幂等)。返回是否确实移除"""
+        """移除房间(幂等)。返回是否确实移除
+
+        注意:泵可能正阻塞在满队列的 put 上(block 模式且消费者慢或
+        缺席),client.close() 只终止客户端迭代、解除不了队列等待——
+        必须取消泵任务,否则 remove/close 会永久挂死。被取消的那条
+        在途消息随本房间一起丢弃(remove 的语义本就是停止该房间)。
+        """
         entry = self._rooms.pop(room_id, None)
         if entry is None:
             return False
         client, task = entry
         with contextlib.suppress(Exception):
             await client.close()
+        task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return True
 

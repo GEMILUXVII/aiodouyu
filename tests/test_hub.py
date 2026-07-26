@@ -151,6 +151,33 @@ async def test_drop_oldest_overflow(server):
     await hub.close()
 
 
+async def test_remove_unblocks_pump_stuck_on_full_queue():
+    """泵阻塞在满队列 put 上时 remove/close 不得挂死(回归:真死锁)"""
+
+    class FloodClient:
+        def __init__(self, rid):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+        def __aiter__(self):
+            return self._it()
+
+        async def _it(self):
+            i = 0
+            while not self.closed:
+                yield {"type": "chatmsg", "txt": str(i)}
+                i += 1
+                await asyncio.sleep(0)
+
+    hub = DanmakuHub(queue_maxsize=2, client_factory=FloodClient)
+    await hub.add(1)
+    await asyncio.sleep(0.1)  # 无消费者,泵必然已阻塞在 put
+    await asyncio.wait_for(hub.remove(1), timeout=2.0)  # 修前此处永久挂死
+    await asyncio.wait_for(hub.close(), timeout=2.0)
+
+
 async def test_invalid_overflow():
     with pytest.raises(ValueError):
         DanmakuHub(overflow="bogus")
