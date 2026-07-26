@@ -1,24 +1,25 @@
 name: release
 
 # 打 tag(v*)时构建并发布到 PyPI。
-# 使用 PyPI Trusted Publishing(OIDC),无需在仓库配置 token:
-# 需先在 https://pypi.org/manage/account/publishing/ 添加本仓库为
-# pending publisher(project: aiodouyu, workflow: release.yml,
-# environment: pypi)。
+# 使用 PyPI Trusted Publishing(OIDC),无需在仓库配置 token。
+# 供应链纪律:action 一律 pin 完整 commit SHA(注释保留可读 tag)。
 
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
 
@@ -33,7 +34,7 @@ jobs:
           twine check dist/*
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/
@@ -46,10 +47,47 @@ jobs:
       id-token: write  # Trusted Publishing 必需
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          # 显式声明 PEP 740 attestations(上游默认已开,固化为契约)
+          attestations: true
+
+  github-release:
+    # CHANGELOG 是唯一事实源:从中抽取当前版本段落作为 Release notes。
+    # 守门副作用:tag 对应段落缺失时本 job 失败——发版必须先写 CHANGELOG
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Extract changelog section
+        run: |
+          python - <<'EOF'
+          import os, re, sys
+
+          tag = os.environ["GITHUB_REF_NAME"]  # e.g. v0.2.0
+          version = tag.lstrip("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          pattern = rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)"
+          m = re.search(pattern, text, re.S)
+          if not m:
+              sys.exit(f"CHANGELOG.md 中找不到版本 {version} 的段落")
+          open("release_body.md", "w", encoding="utf-8").write(m.group(1).strip() + "\n")
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "aiodouyu $GITHUB_REF_NAME" \
+            --notes-file release_body.md
