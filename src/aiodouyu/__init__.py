@@ -31,7 +31,7 @@ from .exceptions import (
 )
 from .web import RoomInfo, fetch_room
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "EVENT_CONNECTED",
