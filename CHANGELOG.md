@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.1] - 2026-07-27
+
+### Fixed
+
+- `close()` 从其他任务调用时不再与消费方的 `__anext__` 竞争
+  (旧实现对活跃迭代器 `aclose()`,可抛
+  `RuntimeError('generator is already running')`)
+- `fetch_room` 异常契约补漏:未知 charset(`LookupError`)、
+  非标 JSON `Infinity`(`OverflowError`)、`http.client` 传输异常
+  均正确映射为 `ApiError`
+- open API 错误映射修正:仅 `error=101` 判为 `RoomNotFound`,
+  其余非零码与畸形响应判为 `ApiError`(限流不再被误报为房间不存在)
+- CLI:可预期失败输出一行错误而非 traceback;stderr 同步 UTF-8;
+  `--types "rss, chatmsg"` 带空格不再静默失效
+- `packet.__all__` 补齐 `PacketError`/`validate_length`;`PacketError`
+  纳入 `AiodouyuError` 族(仍是 `ValueError` 子类,向后兼容)
+- `DanmakuClient.on()` 增加 `@overload` 标注,py.typed 下装饰器
+  用法不再退化为 `Any`
+- README 首个示例的开播判定补上 `ivl` 字段(视频轮播不算开播);
+  `fetch_room` 的 timeout 文档改为如实描述逐 socket 操作语义
+
 ## [0.1.0] - 2026-07-26
 
 首个公开版本。

@@ -37,7 +37,9 @@ async def main():
             if msg["type"] == "chatmsg":
                 print(f'{msg.get("nn")}: {msg.get("txt")}')
             elif msg["type"] == "rss":
-                print("开播" if msg.get("ss") == "1" else "下播")
+                # ivl=='0' 排除视频轮播:轮播房的 ss 也是 '1'
+                is_live = msg.get("ss") == "1" and msg.get("ivl") == "0"
+                print("开播" if is_live else "下播")
 
 asyncio.run(main())
 ```
