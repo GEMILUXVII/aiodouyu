@@ -316,11 +316,63 @@ class DanmakuClient:
             self._iterating = False
             await self._teardown()
 
-    async def _connect(self) -> None:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(self.host, self.port),
-            timeout=self.connect_timeout,
+    async def _open_connection(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """建立 TCP 连接;close() 可立即打断(抛 ConnectionClosed)
+
+        直接 wait_for(open_connection) 时 close() 只能设标志,连接尝试
+        本身无人取消,消费任务会滞留到 connect_timeout(网络故障 SYN
+        丢弃场景实测可达数秒)。这里让连接与 close 事件竞速。
+        """
+        connect_task = asyncio.ensure_future(
+            asyncio.open_connection(self.host, self.port)
         )
+        close_wait = asyncio.ensure_future(self._close_event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {connect_task, close_wait},
+                timeout=self.connect_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            connect_task.cancel()
+            close_wait.cancel()
+            await asyncio.gather(connect_task, close_wait, return_exceptions=True)
+            raise
+        finally:
+            close_wait.cancel()
+
+        if connect_task in done and not connect_task.cancelled():
+            exc = connect_task.exception()
+            if exc is not None:
+                raise exc
+            reader, writer = connect_task.result()
+            if self._closed:
+                # close 与连接完成几乎同时:立刻收掉新连接
+                with contextlib.suppress(Exception):
+                    transport = writer.transport
+                    if transport is not None:
+                        transport.abort()
+                    writer.close()
+                raise ConnectionClosed("客户端已关闭")
+            return reader, writer
+
+        # 连接未完成:被 close 打断或超时
+        connect_task.cancel()
+        results = await asyncio.gather(connect_task, return_exceptions=True)
+        leftover = results[0]
+        if isinstance(leftover, tuple):
+            # cancel 与完成竞速中连接侥幸建立:同样收掉,避免泄漏
+            with contextlib.suppress(Exception):
+                leftover[1].transport.abort()
+                leftover[1].close()
+        if self._closed:
+            raise ConnectionClosed("客户端已关闭")
+        raise TimeoutError(
+            f"连接 {self.host}:{self.port} 超时({self.connect_timeout:.0f}s)"
+        )
+
+    async def _connect(self) -> None:
+        reader, writer = await self._open_connection()
         self._reader = reader
         self._writer = writer
         self._last_recv = time.monotonic()

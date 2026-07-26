@@ -415,6 +415,34 @@ async def test_short_lived_connections_backoff(server):
     assert server.connections <= 2
 
 
+async def test_close_interrupts_inflight_connect(server, monkeypatch):
+    """close() 必须打断进行中的连接尝试,而非滞留到 connect_timeout"""
+
+    hang = asyncio.Event()  # 永不 set:模拟 SYN 被丢弃的黑洞网络
+    entered = asyncio.Event()
+    real_open = asyncio.open_connection
+
+    async def blackhole_open(*args, **kwargs):
+        entered.set()
+        await hang.wait()
+        return await real_open(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", blackhole_open)
+
+    client = make_client(server, connect_timeout=30.0)  # 不打断的话要挂 30s
+
+    async def consume():
+        async for _ in client:
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(entered.wait(), 5)  # 消费方挂在连接尝试中
+    start = asyncio.get_running_loop().time()
+    await client.close()
+    await asyncio.wait_for(task, 2.0)
+    assert asyncio.get_running_loop().time() - start < 2.0
+
+
 async def test_close_while_consumer_suspended_in_loop_body(server):
     """消费方挂起在循环体内时另一任务 close():迭代必须干净结束
 
