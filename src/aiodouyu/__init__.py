@@ -29,6 +29,10 @@ from .exceptions import (
     ProtocolError,
     RoomNotFound,
 )
+
+# 注:包属性 aiodouyu.replay 是回放函数;录制辅助函数经
+# `from aiodouyu.replay import write_header, write_message` 取用
+from .replay import replay
 from .web import RoomInfo, fetch_room
 
 __version__ = "0.1.2"
@@ -46,6 +50,7 @@ __all__ = [
     "__version__",
     "fetch_room",
     "packet",
+    "replay",
     "stt",
     "web",
 ]
