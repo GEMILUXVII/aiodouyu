@@ -15,11 +15,14 @@ import logging
 import sys
 
 from .client import DanmakuClient
+from .exceptions import AiodouyuError
 from .web import fetch_room
 
 
 async def _run(args: argparse.Namespace) -> None:
-    types = set(args.types.split(",")) if args.types else None
+    # strip 各段:引号内带空格("rss, chatmsg")是 shell 里的自然写法,
+    # 不清洗会让 " chatmsg" 永不匹配且无任何提示
+    types = {t.strip() for t in args.types.split(",") if t.strip()} or None
     client = DanmakuClient(
         room_id=args.room_id,
         types=types,
@@ -80,8 +83,10 @@ def main() -> None:
     args = parser.parse_args()
 
     # Windows 控制台默认 GBK 编码，弹幕中文会显示为乱码；强制 UTF-8 输出
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # (stderr 也要处理：logging 与错误消息都走 stderr)
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
@@ -89,6 +94,11 @@ def main() -> None:
     except KeyboardInterrupt:
         print("--- 已停止 ---")
         sys.exit(0)
+    except (AiodouyuError, ValueError) as exc:
+        # 可预期的常规失败(房间不存在/接口失败/非法房间号)给一行
+        # 错误信息即可,原始 traceback 会让用户误以为库内部崩溃
+        print(f"错误: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
