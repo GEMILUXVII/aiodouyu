@@ -1,6 +1,7 @@
 """Tests for the confirmed live-status monitor."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -276,3 +277,79 @@ async def test_periodic_resync_is_opt_in(monkeypatch):
 def test_periodic_resync_interval_rejects_negative_values():
     with pytest.raises(ValueError, match="periodic_resync_interval"):
         LiveStatusMonitor(4, periodic_resync_interval=-1)
+
+
+def test_initial_live_without_announcement_still_emits_offline(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+    events = []
+    monitor = LiveStatusMonitor(
+        5,
+        live_callback=lambda room_id, message: events.append("live"),
+        offline_callback=lambda room_id, duration: events.append(("offline", duration)),
+        announce_initial_live=False,
+        notify_cooldown=0,
+        offline_confirmation=0,
+    )
+
+    monitor._apply_observation(True, {}, started_at=900.0)
+    assert events == []
+
+    now["value"] = 1100.0
+    monitor._apply_observation(False, {})
+    assert events == [("offline", 200.0)]
+
+
+def test_same_live_snapshot_only_corrects_start_time_earlier(monkeypatch):
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 1000.0)
+    monitor = LiveStatusMonitor(6, announce_initial_live=False)
+
+    monitor._apply_observation(True, {}, started_at=900.0)
+    monitor._apply_observation(True, {}, started_at=950.0)
+    assert monitor.live_start_time == 900.0
+
+    monitor._apply_observation(True, {}, started_at=850.0)
+    assert monitor.live_start_time == 850.0
+
+    monitor._apply_observation(True, {}, started_at=1100.0)
+    assert monitor.live_start_time == 850.0
+
+
+@pytest.mark.asyncio
+async def test_resync_callback_contains_serializable_room_snapshot(monkeypatch):
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(
+            is_live=True,
+            started_at=900,
+            title="Title",
+            category="Category",
+            cover_url="https://example.com/cover.jpg",
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    client = FakeDanmakuClient()
+    messages = []
+    monitor = LiveStatusMonitor(
+        7,
+        live_callback=lambda room_id, message: messages.append(message),
+        client_factory=lambda: client,
+        periodic_resync_interval=0.01,
+        notify_cooldown=0,
+    )
+    monitor.start()
+
+    await asyncio.sleep(0.04)
+    await monitor.stop()
+
+    assert len(messages) == 1
+    assert messages[0]["room_info"] == {
+        "title": "Title",
+        "category": "Category",
+        "cover_url": "https://example.com/cover.jpg",
+        "started_at": 900,
+        "is_live": True,
+        "fetched_at": messages[0]["room_info"]["fetched_at"],
+    }
+    json.dumps(messages[0])

@@ -78,6 +78,9 @@ class LiveStatusMonitor:
 
         self.last_live_status: bool | None = None
         self.live_start_time: float | None = None
+        # Historical name kept for state compatibility. It means that the
+        # current live session is eligible for an offline callback, regardless
+        # of whether the initial live callback was intentionally suppressed.
         self._has_announced_live = False
         self._last_notify_time = 0.0
         self._notify_cooldown = float(notify_cooldown)
@@ -98,6 +101,8 @@ class LiveStatusMonitor:
             self._has_announced_live = bool(
                 inherit_state.get("has_announced_live", False)
             )
+            if self.last_live_status is True:
+                self._has_announced_live = True
             self._last_notify_time = float(inherit_state.get("last_notify_time", 0.0))
             self._pending_status = inherit_state.get("pending_status")
             self._pending_msg = inherit_state.get("pending_msg")
@@ -152,6 +157,43 @@ class LiveStatusMonitor:
         self._pending_observed_at = None
         self._pending_confirmed_at = None
         self._pending_needs_resync = False
+
+    @staticmethod
+    def _valid_started_at(started_at: float | None, now: float) -> float | None:
+        """Return a plausible live start timestamp."""
+        if started_at is None:
+            return None
+        try:
+            value = float(started_at)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if 0 < value <= now else None
+
+    def _resync_message(self, info: Any, fetched_at: float) -> dict[str, Any]:
+        """Build a JSON-compatible callback message from an HTTP snapshot."""
+        started_at = self._valid_started_at(
+            getattr(info, "started_at", None), fetched_at
+        )
+        return {
+            "type": "aiodouyu.resync",
+            "roomid": str(self.room_id),
+            "room_info": {
+                "title": str(getattr(info, "title", "") or ""),
+                "category": (
+                    str(category)
+                    if (category := getattr(info, "category", None))
+                    else None
+                ),
+                "cover_url": (
+                    str(cover_url)
+                    if (cover_url := getattr(info, "cover_url", None))
+                    else None
+                ),
+                "started_at": started_at,
+                "is_live": bool(info.is_live),
+                "fetched_at": fetched_at,
+            },
+        }
 
     def _apply_transition(
         self,
@@ -208,6 +250,7 @@ class LiveStatusMonitor:
         try:
             self._obs_seq += 1
             now = time.time()
+            started_at = self._valid_started_at(started_at, now)
             callback: Callable | None = None
             args: tuple = ()
 
@@ -221,8 +264,11 @@ class LiveStatusMonitor:
                 self.last_live_status = is_live
                 if is_live:
                     self.live_start_time = started_at or now
+                    # ``announce_initial_live`` controls only the initial live
+                    # callback. A silently adopted session must still be able
+                    # to emit its later offline transition.
+                    self._has_announced_live = True
                     if self._announce_initial_live:
-                        self._has_announced_live = True
                         self._last_notify_time = now
                         logger.info("斗鱼直播间 %s 开播了 (初始状态)", self.room_id)
                         if self.live_callback:
@@ -235,8 +281,14 @@ class LiveStatusMonitor:
                         )
             elif is_live == self.last_live_status:
                 self._clear_pending()
+                if is_live:
+                    self._has_announced_live = True
                 if is_live and started_at is not None:
-                    self.live_start_time = started_at
+                    if (
+                        self.live_start_time is None
+                        or started_at < self.live_start_time
+                    ):
+                        self.live_start_time = started_at
             elif (
                 not is_live
                 and self.last_live_status is True
@@ -445,10 +497,12 @@ class LiveStatusMonitor:
 
         self._resync_pending = False
         self._schedule_next_periodic_resync()
+        fetched_at = time.time()
+        message = self._resync_message(info, fetched_at)
         self._apply_observation(
             info.is_live,
-            {"type": "aiodouyu.resync", "roomid": str(self.room_id)},
-            started_at=float(info.started_at) if info.started_at else None,
+            message,
+            started_at=message["room_info"]["started_at"],
             require_offline_confirmation=True,
         )
 
