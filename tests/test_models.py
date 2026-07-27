@@ -8,17 +8,40 @@ pytestmark = pytest.mark.asyncio
 
 # 真实语料样本(截取自 --record 抓包)
 CHATMSG = {
-    "type": "chatmsg", "rid": "9999", "uid": "53697999", "nn": "网友甲",
-    "txt": "弹幕/内容@测试", "cid": "62ec0d915", "level": "34",
-    "cst": "1785076556771", "bnn": "小僵尸", "bl": "20", "brid": "507882",
+    "type": "chatmsg",
+    "rid": "9999",
+    "uid": "53697999",
+    "nn": "网友甲",
+    "txt": "弹幕/内容@测试",
+    "cid": "62ec0d915",
+    "level": "34",
+    "cst": "1785076556771",
+    "bnn": "小僵尸",
+    "bl": "20",
+    "brid": "507882",
 }
 DGB = {
-    "type": "dgb", "rid": "9999", "gfid": "824", "gfn": "粉丝荧光棒",
-    "gfcnt": "270", "hits": "270", "uid": "16219566", "nn": "送礼人",
-    "level": "41", "bnn": "小僵尸", "bl": "26", "brid": "9999",
+    "type": "dgb",
+    "rid": "9999",
+    "gfid": "824",
+    "gfn": "粉丝荧光棒",
+    "gfcnt": "270",
+    "hits": "270",
+    "uid": "16219566",
+    "nn": "送礼人",
+    "level": "41",
+    "bnn": "小僵尸",
+    "bl": "26",
+    "brid": "9999",
 }
-UENTER_MIN = {"type": "uenter", "rid": "288016", "uid": "1", "nn": "路人",
-              "level": "12", "bnn": ""}
+UENTER_MIN = {
+    "type": "uenter",
+    "rid": "288016",
+    "uid": "1",
+    "nn": "路人",
+    "level": "12",
+    "bnn": "",
+}
 RSS_LIVE = {"type": "rss", "ss": "1", "ivl": "0", "rid": "9999"}
 
 
@@ -59,6 +82,10 @@ async def test_room_status_semantics():
 
     loop = models.RoomStatus.from_dict({"type": "rss", "ss": "1", "ivl": "1"})
     assert loop.is_live is False and loop.is_loop is True
+
+    # ivl 不是所有 rss 都携带;缺失时不能把明确的 ss=1 压成下播
+    no_ivl = models.RoomStatus.from_dict({"type": "rss", "ss": "1"})
+    assert no_ivl.is_live is True and no_ivl.is_loop is False
 
     off = models.RoomStatus.from_dict({"type": "rss", "ss": "0", "ivl": "0"})
     assert off.is_live is False and off.is_loop is False

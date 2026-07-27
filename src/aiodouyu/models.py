@@ -153,9 +153,9 @@ class UserEnter:
 class RoomStatus:
     """直播状态消息(type=rss)
 
-    字段语义与 ``fetch_room()``/生产状态机对齐并经长期使用验证:
-    ``ss=='1'`` 表示开播,``ivl=='0'`` 表示非视频轮播,两者同时成立
-    才是真实开播(``is_live``)。斗鱼只在状态**变化**时推送本消息。
+    ``ss=='1'`` 表示开播。``ivl`` 并非每种 rss 都保证携带,仅在
+    ``ivl=='1'`` 时明确表示视频轮播;缺失不能反向解释为下播。
+    斗鱼只在状态**变化**时推送本消息。
     """
 
     ss: str | None
@@ -166,12 +166,12 @@ class RoomStatus:
     @property
     def is_live(self) -> bool:
         """是否真实开播(排除视频轮播)"""
-        return self.ss == "1" and self.ivl == "0"
+        return self.ss == "1" and self.ivl != "1"
 
     @property
     def is_loop(self) -> bool:
         """是否处于视频轮播"""
-        return self.ss == "1" and self.ivl != "0"
+        return self.ss == "1" and self.ivl == "1"
 
     @classmethod
     def from_dict(cls, msg: dict[str, str]) -> RoomStatus:
