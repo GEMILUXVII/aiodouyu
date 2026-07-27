@@ -172,6 +172,51 @@ async def test_transient_offline_requires_stable_http_confirmation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_http_live_discards_stale_offline_event_time(monkeypatch):
+    now = {"value": 1000.0}
+    http_status = {"is_live": True}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(
+            is_live=http_status["is_live"],
+            started_at=1000.0 if http_status["is_live"] else None,
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    events = []
+    monitor = LiveStatusMonitor(
+        12725169,
+        live_callback=lambda room_id, message: events.append(("live", None)),
+        offline_callback=lambda room_id, duration: events.append(
+            ("offline", duration, monitor.last_offline_time)
+        ),
+        notify_cooldown=30,
+        offline_confirmation=5,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+    now["value"] = 1001.0
+    monitor._rss_handler({"type": "rss", "ss": "0", "ivl": "0"})
+
+    now["value"] = 1002.0
+    await monitor._resync()
+    assert monitor._pending_status is None
+    assert monitor.last_live_status is True
+
+    http_status["is_live"] = False
+    now["value"] = 1030.0
+    await monitor._resync()
+    assert monitor._pending_observed_at == 1030.0
+
+    now["value"] = 1035.0
+    await monitor._resync()
+
+    assert events == [("live", None), ("offline", 30.0, 1030.0)]
+    assert monitor.last_live_status is False
+
+
+@pytest.mark.asyncio
 async def test_http_offline_cannot_reverse_unconfirmed_realtime_live(monkeypatch):
     async def fake_fetch_room(room_id, *, source, timeout):
         return SimpleNamespace(is_live=False, started_at=None)

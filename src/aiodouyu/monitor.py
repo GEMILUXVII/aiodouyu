@@ -77,6 +77,7 @@ class LiveStatusMonitor:
 
         self.last_live_status: bool | None = None
         self.live_start_time: float | None = None
+        self.last_offline_time: float | None = None
         # Historical name kept for state compatibility. It means that the
         # current live session is eligible for an offline callback, regardless
         # of whether the initial live callback was intentionally suppressed.
@@ -99,6 +100,7 @@ class LiveStatusMonitor:
         if inherit_state:
             self.last_live_status = inherit_state.get("last_live_status")
             self.live_start_time = inherit_state.get("live_start_time")
+            self.last_offline_time = inherit_state.get("last_offline_time")
             self._has_announced_live = bool(
                 inherit_state.get("has_announced_live", False)
             )
@@ -141,6 +143,7 @@ class LiveStatusMonitor:
         return {
             "last_live_status": self.last_live_status,
             "live_start_time": self.live_start_time,
+            "last_offline_time": self.last_offline_time,
             "has_announced_live": self._has_announced_live,
             "last_notify_time": self._last_notify_time,
             "pending_status": self._pending_status,
@@ -220,11 +223,11 @@ class LiveStatusMonitor:
         logger.info("斗鱼直播间 %s 下播了", self.room_id)
         self._live_observed_via_rss = False
         self._live_rss_observed_at = None
+        offline_time = self._valid_started_at(event_time, now) or now
+        self.last_offline_time = offline_time
         duration = 0.0
         if self.live_start_time:
-            duration = (
-                event_time if event_time is not None else now
-            ) - self.live_start_time
+            duration = offline_time - self.live_start_time
             duration = max(duration, 0.0)
             self.live_start_time = None
         announced = self._has_announced_live
@@ -510,6 +513,21 @@ class LiveStatusMonitor:
             logger.debug("斗鱼直播间 %s 对账快照已过期,丢弃并重拉", self.room_id)
             self._schedule_resync()
             return
+
+        if (
+            self._pending_needs_resync
+            and self._pending_status is False
+            and info.is_live
+        ):
+            # Offline transitions require HTTP confirmation. A live HTTP
+            # snapshot therefore disproves the pending offline edge
+            # immediately; retaining its observed time would later truncate
+            # the session duration if HTTP eventually turns offline.
+            logger.info(
+                "斗鱼直播间 %s 的下播候选已被 HTTP 直播状态撤销",
+                self.room_id,
+            )
+            self._clear_pending()
 
         if (
             self._pending_needs_resync
