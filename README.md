@@ -139,9 +139,8 @@ async for msg in client:
 ### 已确认的开播/下播监控
 
 若业务需要通知而不是原始协议流，优先使用 `LiveStatusMonitor`。它把 `rss`
-仅作为变化触发信号，再用 betard HTTP 快照确认状态；首次快照仍是旧状态时
-会继续短期复查，下播还须保持稳定 90 秒，可避免字段缺失、接口更新延迟或
-短时状态回退产生假下播和漏开播：
+仅作为变化触发信号，再用 betard HTTP 快照确认状态，可避免字段缺失、短时
+抖动或冲突消息产生假下播：
 
 ```python
 from aiodouyu import LiveStatusMonitor
@@ -150,7 +149,7 @@ monitor = LiveStatusMonitor(
     9999,
     live_callback=lambda room_id, msg: print("开播", room_id),
     offline_callback=lambda room_id, duration: print("下播", room_id, duration),
-    offline_confirmation=90,  # 下播稳定确认秒数；设为 0 可关闭
+    periodic_resync_interval=300,  # 可选:每 5 分钟做一次 HTTP 兜底对账
 )
 monitor.start()
 
@@ -159,8 +158,10 @@ await monitor.stop()
 ```
 
 监控器还会在弹幕连接建立和自动重连后主动对账，并对 HTTP 失败进行退避
-重试。可用 `export_state()` 保存状态，在创建新实例时通过 `inherit_state`
-回灌，避免干净重启后重复播报。
+重试。`periodic_resync_interval` 默认是 `0`（关闭）；设置为正数后，即使
+弹幕连接尚未建立或某次 `rss` 未到达，也会定期以 HTTP 当前状态校准。
+可用 `export_state()` 保存状态，在创建新实例时通过 `inherit_state` 回灌，
+避免干净重启后重复播报。
 
 ## 多房间(DanmakuHub)
 

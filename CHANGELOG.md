@@ -3,6 +3,14 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);
 0.x 阶段的兼容承诺见 README「版本与稳定性」。
 
+## [0.4.5] - 2026-07-27
+
+### Added
+
+- `LiveStatusMonitor` 新增可选的 `periodic_resync_interval`，即使弹幕连接
+  尚未建立或没有收到 `rss`，也能按指定间隔使用 HTTP 对账当前直播状态；
+  默认关闭，由应用层按规模和接口预算显式启用
+
 ## [0.4.4] - 2026-07-27
 
 ### Fixed

@@ -18,6 +18,7 @@ __all__ = ["LiveStatusMonitor"]
 
 logger = logging.getLogger(__name__)
 
+# betard 能区分真实直播与视频轮播，open 源不能。
 RESYNC_SOURCE = "betard"
 RESYNC_TIMEOUT = 10.0
 RESYNC_RETRY_BASE = 5.0
@@ -54,6 +55,7 @@ class LiveStatusMonitor:
         notify_cooldown: float = 30.0,
         announce_initial_live: bool = True,
         offline_confirmation: float = OFFLINE_CONFIRMATION,
+        periodic_resync_interval: float = 0.0,
     ) -> None:
         if isinstance(room_id, bool) or not isinstance(room_id, int):
             raise TypeError("room_id 必须为 int")
@@ -63,6 +65,8 @@ class LiveStatusMonitor:
             raise ValueError("notify_cooldown 不能为负数")
         if offline_confirmation < 0:
             raise ValueError("offline_confirmation 不能为负数")
+        if periodic_resync_interval < 0:
+            raise ValueError("periodic_resync_interval 不能为负数")
 
         self.room_id = room_id
         self.live_callback = live_callback
@@ -79,6 +83,8 @@ class LiveStatusMonitor:
         self._notify_cooldown = float(notify_cooldown)
         self._announce_initial_live = announce_initial_live
         self._offline_confirmation = float(offline_confirmation)
+        self._periodic_resync_interval = float(periodic_resync_interval)
+
         self._pending_status: bool | None = None
         self._pending_msg: dict | None = None
         self._pending_started_at: float | None = None
@@ -108,18 +114,24 @@ class LiveStatusMonitor:
         self._client: DanmakuClient | None = None
         self._task: asyncio.Task[None] | None = None
         self.connected = False
+
         self._resync_pending = False
         self._resync_at = 0.0
         self._resync_failures = 0
         self._resync_room_gone = False
         self._obs_seq = 0
         self._conn_gen = 0
+        self._next_periodic_resync_at = (
+            time.monotonic() if self._periodic_resync_interval > 0 else float("inf")
+        )
 
     @property
     def is_healthy(self) -> bool:
+        """消费协程是否仍在运行。"""
         return not self._stop_flag and self._task is not None and not self._task.done()
 
     def export_state(self) -> dict[str, Any]:
+        """导出可传给下一实例 ``inherit_state`` 的状态。"""
         return {
             "last_live_status": self.last_live_status,
             "live_start_time": self.live_start_time,
@@ -151,6 +163,7 @@ class LiveStatusMonitor:
         self._obs_seq += 1
         self._clear_pending()
         self.last_live_status = is_live
+
         if is_live:
             logger.info("斗鱼直播间 %s 开播了", self.room_id)
             if self.live_start_time is None:
@@ -177,7 +190,7 @@ class LiveStatusMonitor:
                 return self.offline_callback, (self.room_id, duration)
         else:
             logger.debug(
-                "斗鱼直播间 %s 检测到下播，但本场未播报开播，忽略",
+                "斗鱼直播间 %s 检测到下播,但尚未发布开播通知,忽略",
                 self.room_id,
             )
         return None, ()
@@ -189,6 +202,7 @@ class LiveStatusMonitor:
         started_at: float | None = None,
         require_offline_confirmation: bool = False,
     ) -> None:
+        """应用 HTTP 结果或测试注入的可信状态观测。"""
         if self._stop_flag:
             return
         try:
@@ -196,26 +210,27 @@ class LiveStatusMonitor:
             now = time.time()
             callback: Callable | None = None
             args: tuple = ()
+
             if self.last_live_status is None:
                 self._clear_pending()
-                self.last_live_status = is_live
                 logger.info(
                     "斗鱼直播间 %s 当前状态: %s",
                     self.room_id,
                     "直播中" if is_live else "未开播",
                 )
+                self.last_live_status = is_live
                 if is_live:
                     self.live_start_time = started_at or now
                     if self._announce_initial_live:
                         self._has_announced_live = True
                         self._last_notify_time = now
-                        logger.info("斗鱼直播间 %s 开播了（初始状态）", self.room_id)
+                        logger.info("斗鱼直播间 %s 开播了 (初始状态)", self.room_id)
                         if self.live_callback:
                             callback = self.live_callback
                             args = (self.room_id, msg)
                     else:
                         logger.info(
-                            "斗鱼直播间 %s 已在播（补播报关闭，静默接管）",
+                            "斗鱼直播间 %s 已在播(补播报已关闭,静默接管)",
                             self.room_id,
                         )
             elif is_live == self.last_live_status:
@@ -237,7 +252,7 @@ class LiveStatusMonitor:
                     self._pending_needs_resync = True
                     self._schedule_resync(self._offline_confirmation)
                     logger.info(
-                        "斗鱼直播间 %s 检测到下播候选，将在 %.0f 秒后再次确认",
+                        "斗鱼直播间 %s 检测到下播候选,将在 %.0f 秒后再次确认",
                         self.room_id,
                         self._offline_confirmation,
                     )
@@ -269,35 +284,47 @@ class LiveStatusMonitor:
                 self._pending_started_at = started_at
                 self._pending_observed_at = now
                 self._pending_confirmed_at = now
+                # 本方法只接收 HTTP 结果，pending 已经确认。
                 self._pending_needs_resync = False
+                logger.debug(
+                    "斗鱼直播间 %s 已记录经确认的冷却期待定状态",
+                    self.room_id,
+                )
             else:
                 if is_live and started_at is not None:
                     self.live_start_time = started_at
                 callback, args = self._apply_transition(is_live, msg, now)
+
             if callback:
                 callback(*args)
         except Exception:
             logger.exception("处理斗鱼直播间 %s 状态时出错", self.room_id)
 
     def _rss_handler(self, msg: dict) -> None:
+        """把原始 rss 转为待确认候选状态。"""
         if self._stop_flag:
             return
         status = RoomStatus.from_dict(msg)
         if status.ss not in {"0", "1"}:
             logger.debug(
-                "斗鱼直播间 %s 收到缺少有效 ss 的 rss，已忽略: %r",
+                "斗鱼直播间 %s 收到缺少有效 ss 的 rss,已忽略: %r",
                 self.room_id,
                 msg,
             )
             return
+
         is_live = status.is_live
+        # 直接调用私有方法的旧测试/高级用户可能只传字段、不带 type；
+        # 这类显式注入视为可信观测。真实客户端消息始终带 type=rss。
         if msg.get("type") != "rss":
             self._apply_observation(is_live, msg)
             return
+
         self._obs_seq += 1
         if self.last_live_status is not None and is_live == self.last_live_status:
             self._clear_pending()
             return
+
         self._pending_status = is_live
         self._pending_msg = msg
         self._pending_started_at = None
@@ -306,7 +333,7 @@ class LiveStatusMonitor:
         self._pending_needs_resync = True
         self._schedule_resync()
         logger.debug(
-            "斗鱼直播间 %s 收到状态变化 rss，等待 HTTP 确认",
+            "斗鱼直播间 %s 收到反向 rss,等待 betard 对账确认",
             self.room_id,
         )
 
@@ -323,7 +350,7 @@ class LiveStatusMonitor:
                 self._obs_seq += 1
                 self._clear_pending()
                 return
-            logger.info("斗鱼直播间 %s 冷却结束，应用已确认状态转换", self.room_id)
+            logger.info("斗鱼直播间 %s 冷却结束,应用已确认状态转换", self.room_id)
             if self._pending_status:
                 start_base = self._pending_started_at or self._pending_observed_at
                 if start_base is not None:
@@ -343,6 +370,12 @@ class LiveStatusMonitor:
         self._resync_pending = True
         self._resync_at = time.monotonic() + delay
 
+    def _schedule_next_periodic_resync(self) -> None:
+        if self._periodic_resync_interval > 0:
+            self._next_periodic_resync_at = (
+                time.monotonic() + self._periodic_resync_interval
+            )
+
     async def _resync(self) -> None:
         seq_before = self._obs_seq
         gen_before = self._conn_gen
@@ -357,7 +390,7 @@ class LiveStatusMonitor:
             if not self._resync_room_gone:
                 self._resync_room_gone = True
                 logger.warning(
-                    "斗鱼直播间 %s 对账返回房间不存在，%.0f 分钟后复查: %s",
+                    "斗鱼直播间 %s 对账返回房间不存在,%.0f 分钟后复查: %s",
                     self.room_id,
                     RESYNC_ROOM_GONE_INTERVAL / 60,
                     exc,
@@ -371,22 +404,24 @@ class LiveStatusMonitor:
             )
             self._schedule_resync(delay)
             logger.warning(
-                "斗鱼直播间 %s 状态对账失败（第 %s 次），%.0f 秒后重试: %s",
+                "斗鱼直播间 %s 状态对账失败(第 %s 次),%.0fs 后重试: %s",
                 self.room_id,
                 self._resync_failures,
                 delay,
                 exc,
             )
             return
+
         self._resync_failures = 0
         self._resync_room_gone = False
         if self._stop_flag:
             self._resync_pending = False
             return
         if seq_before != self._obs_seq or gen_before != self._conn_gen:
-            logger.debug("斗鱼直播间 %s 对账快照已过期，丢弃并重拉", self.room_id)
+            logger.debug("斗鱼直播间 %s 对账快照已过期,丢弃并重拉", self.room_id)
             self._schedule_resync()
             return
+
         if (
             self._pending_needs_resync
             and self._pending_status is not None
@@ -402,12 +437,14 @@ class LiveStatusMonitor:
                 self._schedule_resync(delay)
                 return
             logger.info(
-                "斗鱼直播间 %s 的弹幕状态候选在 %.0f 秒内未获 HTTP 确认，已忽略",
+                "斗鱼直播间 %s 的弹幕状态候选在 %.0f 秒内未获 HTTP 确认,已忽略",
                 self.room_id,
                 RSS_CONFIRM_WINDOW,
             )
             self._clear_pending()
+
         self._resync_pending = False
+        self._schedule_next_periodic_resync()
         self._apply_observation(
             info.is_live,
             {"type": "aiodouyu.resync", "roomid": str(self.room_id)},
@@ -419,6 +456,14 @@ class LiveStatusMonitor:
         while True:
             await asyncio.sleep(RECONCILE_INTERVAL)
             try:
+                now = time.monotonic()
+                if (
+                    self._periodic_resync_interval > 0
+                    and not self._stop_flag
+                    and not self._resync_pending
+                    and now >= self._next_periodic_resync_at
+                ):
+                    self._schedule_resync()
                 if (
                     self._resync_pending
                     and not self._stop_flag
@@ -429,7 +474,10 @@ class LiveStatusMonitor:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("斗鱼直播间 %s 校准协程出错", self.room_id)
+                logger.exception(
+                    "斗鱼直播间 %s 校准协程出错",
+                    self.room_id,
+                )
 
     async def _run(self) -> None:
         client = self._client
@@ -451,7 +499,7 @@ class LiveStatusMonitor:
                     ):
                         self._schedule_resync()
                     logger.info(
-                        "斗鱼监控器 %s 弹幕连接就绪，已登记状态对账",
+                        "斗鱼监控器 %s 弹幕连接就绪,已登记状态对账",
                         self.room_id,
                     )
                 elif msg_type == EVENT_DISCONNECTED:
@@ -471,11 +519,12 @@ class LiveStatusMonitor:
                 await client.close()
             if not self._stop_flag:
                 logger.warning(
-                    "斗鱼监控器 %s 消费循环退出，等待上层重启",
+                    "斗鱼监控器 %s 消费循环退出,等待上层重启",
                     self.room_id,
                 )
 
     def start(self) -> bool:
+        """创建后台消费任务；必须在运行中的事件循环上调用。"""
         if self.is_healthy:
             return True
         if self._stop_flag:
@@ -490,6 +539,7 @@ class LiveStatusMonitor:
         return True
 
     async def stop(self) -> None:
+        """关闭弹幕连接并回收后台任务。"""
         self._stop_flag = True
         try:
             client = self._client

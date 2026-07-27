@@ -38,8 +38,7 @@ class FakeDanmakuClient:
 @pytest.mark.asyncio
 async def test_rss_transitions_require_http_confirmation(monkeypatch):
     monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.01)
-    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_RETRY_INTERVAL", 0.01)
-    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_WINDOW", 0.02)
+    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_WINDOW", 0)
     http_status = {"is_live": True}
     calls = []
 
@@ -79,8 +78,11 @@ async def test_rss_transitions_require_http_confirmation(monkeypatch):
     await asyncio.sleep(0.05)
     assert events == ["live", "offline"]
     assert monitor.last_live_status is False
-    assert len(calls) >= 3
-    assert set(calls) == {(12725169, "betard")}
+    assert calls == [
+        (12725169, "betard"),
+        (12725169, "betard"),
+        (12725169, "betard"),
+    ]
 
     await monitor.stop()
 
@@ -218,3 +220,59 @@ def test_inherited_pending_transition_requires_fresh_http_confirmation():
     assert monitor.last_live_status is True
     assert monitor._pending_status is False
     assert monitor._pending_needs_resync is True
+
+
+@pytest.mark.asyncio
+async def test_periodic_resync_runs_without_danmaku_connection(monkeypatch):
+    """Periodic audits must work even before the danmaku connection is ready."""
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+    calls = []
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        calls.append((room_id, source))
+        return SimpleNamespace(is_live=False, started_at=None)
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    client = FakeDanmakuClient()
+    monitor = LiveStatusMonitor(
+        2,
+        client_factory=lambda: client,
+        periodic_resync_interval=0.02,
+        offline_confirmation=0,
+    )
+    monitor.start()
+
+    await asyncio.sleep(0.08)
+
+    assert len(calls) >= 2
+    assert set(calls) == {(2, "betard")}
+    assert monitor.last_live_status is False
+    assert monitor.connected is False
+
+    await monitor.stop()
+
+
+@pytest.mark.asyncio
+async def test_periodic_resync_is_opt_in(monkeypatch):
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+    calls = []
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        calls.append(room_id)
+        return SimpleNamespace(is_live=False, started_at=None)
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    client = FakeDanmakuClient()
+    monitor = LiveStatusMonitor(3, client_factory=lambda: client)
+    monitor.start()
+
+    await asyncio.sleep(0.04)
+
+    assert calls == []
+
+    await monitor.stop()
+
+
+def test_periodic_resync_interval_rejects_negative_values():
+    with pytest.raises(ValueError, match="periodic_resync_interval"):
+        LiveStatusMonitor(4, periodic_resync_interval=-1)

@@ -37,7 +37,7 @@ from .monitor import LiveStatusMonitor
 from .replay import replay
 from .web import RoomInfo, fetch_room, fetch_rooms, resolve_room_id
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 __all__ = [
     "EVENT_CONNECTED",

@@ -347,6 +347,39 @@ async def test_short_lived_connections_backoff(server):
     assert server.connections <= 2
 
 
+async def test_auto_falls_back_to_tcp_when_ws_hangs(server, monkeypatch):
+    """auto 传输:ws 的 SYN 被防火墙静默 DROP(连接尝试挂死)时,
+    tcp 回退必须在预算内轮到(回归:此前 ws 腿无独立超时,整个拨号
+    被外层超时取消,tcp 回退永远不执行,auto 在目标场景彻底失效)"""
+    from aiodouyu.transport import WsTransport
+
+    hang = asyncio.Event()  # 永不 set:模拟 SYN 被静默丢弃
+
+    async def hanging_ws_connect(host, port, **kwargs):
+        await hang.wait()
+
+    monkeypatch.setattr(WsTransport, "connect", staticmethod(hanging_ws_connect))
+
+    async def script(srv, reader, writer, index):
+        srv.send(writer, {"type": "rss", "ss": "1", "ivl": "0"})
+        await writer.drain()
+        await asyncio.sleep(10)
+
+    server.script = script
+    client = make_client(server, transport="auto", connect_timeout=3.0)
+    start = asyncio.get_running_loop().time()
+    try:
+        messages = await collect(client, 2)  # loginres + rss
+    finally:
+        await client.close()
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert messages[0]["type"] == "loginres"  # 消息经 tcp 回退到达
+    # ws 子超时(connect_timeout/2=1.5s)后回退,总耗时远小于
+    # 旧实现的"永远连不上"
+    assert elapsed < 3.0
+
+
 async def test_close_interrupts_inflight_connect(server, monkeypatch):
     """close() 必须打断进行中的连接尝试,而非滞留到 connect_timeout"""
 
