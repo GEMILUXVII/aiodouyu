@@ -37,7 +37,7 @@ class FakeDanmakuClient:
 
 
 @pytest.mark.asyncio
-async def test_rss_transitions_require_http_confirmation(monkeypatch):
+async def test_live_rss_is_immediate_but_offline_requires_http(monkeypatch):
     monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.01)
     monkeypatch.setattr(monitor_module, "RSS_CONFIRM_WINDOW", 0)
     http_status = {"is_live": True}
@@ -64,8 +64,11 @@ async def test_rss_transitions_require_http_confirmation(monkeypatch):
     monitor.start()
 
     client.push({"type": "rss", "ss": "1", "ivl": "0"})
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.02)
     assert events == ["live"]
+    # The callback is immediate; HTTP confirmation runs only afterward in the
+    # monitor's background reconciliation loop.
+    assert calls == [(12725169, "betard")]
 
     # A contradictory rss packet must not emit offline while HTTP says live.
     client.push({"type": "rss", "ss": "0", "ivl": "0"})
@@ -169,7 +172,82 @@ async def test_transient_offline_requires_stable_http_confirmation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_confirmation_does_not_emit_candidate(monkeypatch):
+async def test_http_offline_cannot_reverse_unconfirmed_realtime_live(monkeypatch):
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(is_live=False, started_at=None)
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    events = []
+    monitor = LiveStatusMonitor(
+        12725169,
+        live_callback=lambda room_id, message: events.append("live"),
+        offline_callback=lambda room_id, duration: events.append("offline"),
+        notify_cooldown=0,
+        offline_confirmation=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+    await monitor._resync()
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+
+    monitor._rss_handler({"type": "rss", "ss": "0", "ivl": "0"})
+    await monitor._resync()
+    assert events == ["live", "offline"]
+    assert monitor.last_live_status is False
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_realtime_live_closes_with_offline_event(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(is_live=False, started_at=None)
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    events = []
+    monitor = LiveStatusMonitor(
+        12725169,
+        live_callback=lambda room_id, message: events.append("live"),
+        offline_callback=lambda room_id, duration: events.append("offline"),
+        notify_cooldown=0,
+        offline_confirmation=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+    await monitor._resync()
+    assert monitor.last_live_status is True
+
+    now["value"] += monitor_module.RSS_CONFIRM_WINDOW + 1
+    await monitor._resync()
+
+    assert events == ["live", "offline"]
+    assert monitor.last_live_status is False
+    assert monitor.live_start_time is None
+
+
+def test_realtime_live_bypasses_notification_cooldown(monkeypatch):
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 1000.0)
+    events = []
+    monitor = LiveStatusMonitor(
+        12725169,
+        live_callback=lambda room_id, message: events.append("live"),
+        notify_cooldown=30,
+        inherit_state={
+            "last_live_status": False,
+            "last_notify_time": 995.0,
+        },
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+
+
+@pytest.mark.asyncio
+async def test_live_rss_does_not_depend_on_http(monkeypatch):
     monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.01)
 
     async def failing_fetch_room(room_id, *, source, timeout):
@@ -188,10 +266,9 @@ async def test_failed_confirmation_does_not_emit_candidate(monkeypatch):
     client.push({"type": "rss", "ss": "1"})
     await asyncio.sleep(0.05)
 
-    assert events == []
-    assert monitor.last_live_status is None
-    assert monitor._pending_status is True
-    assert monitor._pending_needs_resync is True
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+    assert monitor._pending_status is None
     assert monitor._resync_pending is True
     assert monitor.is_healthy
 
@@ -249,6 +326,49 @@ async def test_periodic_resync_runs_without_danmaku_connection(monkeypatch):
     assert set(calls) == {(2, "betard")}
     assert monitor.last_live_status is False
     assert monitor.connected is False
+
+    await monitor.stop()
+
+
+@pytest.mark.asyncio
+async def test_periodic_resync_recovers_a_missed_short_live_event(monkeypatch):
+    """HTTP fallback must detect live even when no rss packet arrives."""
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+    state = {"is_live": False}
+    initial_poll_finished = asyncio.Event()
+    live_seen = asyncio.Event()
+    events = []
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        if not state["is_live"]:
+            initial_poll_finished.set()
+        return SimpleNamespace(
+            is_live=state["is_live"],
+            started_at=100.0 if state["is_live"] else None,
+        )
+
+    def on_live(room_id, message):
+        events.append((room_id, message["type"]))
+        live_seen.set()
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    monitor = LiveStatusMonitor(
+        12725169,
+        live_callback=on_live,
+        client_factory=FakeDanmakuClient,
+        periodic_resync_interval=0.02,
+        notify_cooldown=0,
+    )
+    monitor.start()
+
+    await asyncio.wait_for(initial_poll_finished.wait(), 0.2)
+    assert monitor.last_live_status is False
+
+    state["is_live"] = True
+    await asyncio.wait_for(live_seen.wait(), 0.2)
+
+    assert events == [(12725169, "aiodouyu.resync")]
+    assert monitor.last_live_status is True
 
     await monitor.stop()
 

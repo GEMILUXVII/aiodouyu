@@ -19,7 +19,7 @@
                 break
             await client.close()
 
-协议行为:校验 loginreq/joingroup 握手后回 loginres,之后执行
+协议行为:校验 loginreq 后回 loginres,再校验 joingroup,之后执行
 ``script(server, reader, writer, conn_index)``(每个连接调用一次)。
 握手校验失败记入 ``server.errors``(公共 API 不用 assert——
 ``python -O`` 下 assert 会消失)。
@@ -38,7 +38,10 @@ from .client import DanmakuClient
 
 __all__ = ["FakeDanmakuServer"]
 
-Script = Callable[["FakeDanmakuServer", asyncio.StreamReader, asyncio.StreamWriter, int], Awaitable[None]]
+Script = Callable[
+    ["FakeDanmakuServer", asyncio.StreamReader, asyncio.StreamWriter, int],
+    Awaitable[None],
+]
 
 
 class FakeDanmakuServer:
@@ -49,6 +52,7 @@ class FakeDanmakuServer:
         connections: 累计接受的连接数
         received: 收到的全部客户端消息(含握手)
         errors: 协议校验错误列表(非空说明客户端握手不合规)
+        login_response_gate: 可选事件;设置后服务端等待事件再回复 loginres
         script: 每个连接握手完成后调用的协程
             ``async fn(server, reader, writer, conn_index)``
     """
@@ -59,6 +63,7 @@ class FakeDanmakuServer:
         self.connections = 0
         self.received: list[dict[str, str]] = []
         self.errors: list[str] = []
+        self.login_response_gate: asyncio.Event | None = None
         self.script: Script | None = None
         self._handler_tasks: set[asyncio.Task] = set()
 
@@ -100,9 +105,7 @@ class FakeDanmakuServer:
         defaults.update(overrides)
         return DanmakuClient(**defaults)
 
-    async def read_client_message(
-        self, reader: asyncio.StreamReader
-    ) -> dict[str, str]:
+    async def read_client_message(self, reader: asyncio.StreamReader) -> dict[str, str]:
         """读取并解码一条客户端消息(脚本内可用)"""
         head = await reader.readexactly(4)
         (length,) = struct.unpack("<I", head)
@@ -128,11 +131,13 @@ class FakeDanmakuServer:
             login = await self.read_client_message(reader)
             if login.get("type") != "loginreq":
                 self.errors.append(f"首包不是 loginreq: {login}")
+            if self.login_response_gate is not None:
+                await self.login_response_gate.wait()
+            self.send(writer, {"type": "loginres", "userid": "0"})
+            await writer.drain()
             join = await self.read_client_message(reader)
             if join.get("type") != "joingroup":
                 self.errors.append(f"第二包不是 joingroup: {join}")
-            self.send(writer, {"type": "loginres", "userid": "0"})
-            await writer.drain()
             if self.script:
                 await self.script(self, reader, writer, index)
         except (asyncio.IncompleteReadError, ConnectionError):

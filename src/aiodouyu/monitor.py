@@ -1,4 +1,4 @@
-"""经 HTTP 确认的斗鱼开播/下播状态监控器。"""
+"""Low-latency live start and confirmed offline status monitor."""
 
 from __future__ import annotations
 
@@ -32,15 +32,14 @@ OFFLINE_CONFIRMATION = 90.0
 
 
 class LiveStatusMonitor:
-    """监控单个斗鱼房间并只输出经 HTTP 确认的状态转换。
+    """Monitor one room with a fast live path and confirmed offline path.
 
-    ``DanmakuClient`` 保持原始协议流语义。本类在其上增加状态层：
+    ``DanmakuClient`` keeps raw protocol semantics. This class adds:
 
-    - ``rss`` 只作为“状态可能变化”的触发信号，不直接作为最终结论；
-    - 所有真实 ``rss`` 转换都通过 betard HTTP 快照确认；
-    - 连接建立或重连后主动对账，补齐断连窗口内丢失的转换；
-    - 对账失败按指数退避持续重试，未经确认的反向状态不会被输出；
-    - 冷却期内的转换在到期前再次经过上述确认，不会盲目补发。
+    - explicit live ``rss`` events are emitted immediately;
+    - offline events still require HTTP confirmation;
+    - reconnect and optional periodic HTTP reconciliation recover missed events;
+    - HTTP failures retry with backoff instead of killing the monitor.
 
     回调在事件循环线程同步调用，不能执行阻塞操作。
     """
@@ -94,6 +93,8 @@ class LiveStatusMonitor:
         self._pending_observed_at: float | None = None
         self._pending_confirmed_at: float | None = None
         self._pending_needs_resync = False
+        self._live_observed_via_rss = False
+        self._live_rss_observed_at: float | None = None
 
         if inherit_state:
             self.last_live_status = inherit_state.get("last_live_status")
@@ -217,6 +218,8 @@ class LiveStatusMonitor:
             return None, ()
 
         logger.info("斗鱼直播间 %s 下播了", self.room_id)
+        self._live_observed_via_rss = False
+        self._live_rss_observed_at = None
         duration = 0.0
         if self.live_start_time:
             duration = (
@@ -243,6 +246,8 @@ class LiveStatusMonitor:
         msg: dict,
         started_at: float | None = None,
         require_offline_confirmation: bool = False,
+        announce_initial_live: bool | None = None,
+        bypass_cooldown: bool = False,
     ) -> None:
         """应用 HTTP 结果或测试注入的可信状态观测。"""
         if self._stop_flag:
@@ -268,7 +273,12 @@ class LiveStatusMonitor:
                     # callback. A silently adopted session must still be able
                     # to emit its later offline transition.
                     self._has_announced_live = True
-                    if self._announce_initial_live:
+                    should_announce = (
+                        self._announce_initial_live
+                        if announce_initial_live is None
+                        else announce_initial_live
+                    )
+                    if should_announce:
                         self._last_notify_time = now
                         logger.info("斗鱼直播间 %s 开播了 (初始状态)", self.room_id)
                         if self.live_callback:
@@ -330,7 +340,10 @@ class LiveStatusMonitor:
                         now,
                         event_time=self._pending_observed_at,
                     )
-            elif now - self._last_notify_time < self._notify_cooldown:
+            elif (
+                not bypass_cooldown
+                and now - self._last_notify_time < self._notify_cooldown
+            ):
                 self._pending_status = is_live
                 self._pending_msg = msg
                 self._pending_started_at = started_at
@@ -353,7 +366,7 @@ class LiveStatusMonitor:
             logger.exception("处理斗鱼直播间 %s 状态时出错", self.room_id)
 
     def _rss_handler(self, msg: dict) -> None:
-        """把原始 rss 转为待确认候选状态。"""
+        """Apply live rss immediately and HTTP-confirm offline rss."""
         if self._stop_flag:
             return
         status = RoomStatus.from_dict(msg)
@@ -372,9 +385,33 @@ class LiveStatusMonitor:
             self._apply_observation(is_live, msg)
             return
 
+        logger.info(
+            "斗鱼直播间 %s 收到实时状态 rss: ss=%s, ivl=%s",
+            self.room_id,
+            status.ss,
+            status.ivl,
+        )
         self._obs_seq += 1
         if self.last_live_status is not None and is_live == self.last_live_status:
             self._clear_pending()
+            return
+
+        if is_live:
+            # A real-time room event must not be vetoed by a slower HTTP
+            # endpoint. Missing this edge loses the whole session because rss
+            # is normally sent only once per transition.
+            self._live_observed_via_rss = True
+            self._live_rss_observed_at = time.time()
+            self._apply_observation(
+                True,
+                msg,
+                announce_initial_live=True,
+                bypass_cooldown=True,
+            )
+            # Confirm the session in the background. The callback above stays
+            # latency-sensitive, while this audit lets HTTP recover a missing
+            # later offline rss and keeps the session lifecycle closed.
+            self._schedule_resync()
             return
 
         self._pending_status = is_live
@@ -495,10 +532,42 @@ class LiveStatusMonitor:
             )
             self._clear_pending()
 
+        if (
+            not info.is_live
+            and self.last_live_status is True
+            and self._live_observed_via_rss
+            and self._pending_status is not False
+        ):
+            # Until HTTP has agreed with a real-time live event at least once,
+            # an old offline snapshot must not immediately reverse it.
+            observed_at = self._live_rss_observed_at or time.time()
+            age = max(time.time() - observed_at, 0.0)
+            if age < RSS_CONFIRM_WINDOW:
+                delay = min(
+                    RSS_CONFIRM_RETRY_INTERVAL,
+                    max(RSS_CONFIRM_WINDOW - age, 0.0),
+                )
+                self._schedule_resync(delay)
+                logger.info(
+                    "斗鱼直播间 %s 的 HTTP 状态尚未追上实时开播,继续保留并复查",
+                    self.room_id,
+                )
+                return
+            logger.warning(
+                "斗鱼直播间 %s 的实时开播在 %.0f 秒内未获 HTTP 确认,转入正常下播复核",
+                self.room_id,
+                RSS_CONFIRM_WINDOW,
+            )
+            self._live_observed_via_rss = False
+            self._live_rss_observed_at = None
+
         self._resync_pending = False
         self._schedule_next_periodic_resync()
         fetched_at = time.time()
         message = self._resync_message(info, fetched_at)
+        if info.is_live:
+            self._live_observed_via_rss = False
+            self._live_rss_observed_at = None
         self._apply_observation(
             info.is_live,
             message,

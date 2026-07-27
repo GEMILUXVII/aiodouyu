@@ -183,9 +183,7 @@ class DanmakuClient:
         self.backoff_max = backoff_max
         self.min_uptime = min_uptime
         if transport not in ("tcp", "ws", "auto"):
-            raise ValueError(
-                f'transport 必须是 "tcp"/"ws"/"auto",收到 {transport!r}'
-            )
+            raise ValueError(f'transport 必须是 "tcp"/"ws"/"auto",收到 {transport!r}')
         self.transport = transport
         self.ws_host = ws_host
         self.ws_port = ws_port
@@ -200,6 +198,7 @@ class DanmakuClient:
         self._agen: AsyncIterator[dict[str, str]] | None = None
         self._last_recv = 0.0
         self._handlers: dict[str, list[Callable[[dict[str, str]], Any]]] = {}
+        self._prefetched_messages: list[dict[str, str]] = []
 
     # ==================== 公共接口 ====================
 
@@ -257,8 +256,8 @@ class DanmakuClient:
         """
         async for message in self:
             msg_type = message.get("type", "")
-            for handler in (
-                self._handlers.get(msg_type, []) + self._handlers.get("*", [])
+            for handler in self._handlers.get(msg_type, []) + self._handlers.get(
+                "*", []
             ):
                 try:
                     result = handler(message)
@@ -347,6 +346,10 @@ class DanmakuClient:
                 logger.info("房间 %s 弹幕连接已建立", self.room_id)
                 if self.emit_connection_events:
                     yield {"type": EVENT_CONNECTED, "roomid": str(self.room_id)}
+                while self._prefetched_messages:
+                    message = self._prefetched_messages.pop(0)
+                    if self.types is None or message.get("type") in self.types:
+                        yield message
 
                 # ---- 收包循环 ----
                 try:
@@ -358,9 +361,7 @@ class DanmakuClient:
                     raise
                 except Exception as exc:
                     if not self._closed:
-                        logger.warning(
-                            "房间 %s 弹幕连接断开: %s", self.room_id, exc
-                        )
+                        logger.warning("房间 %s 弹幕连接断开: %s", self.room_id, exc)
                 finally:
                     await self._teardown()
 
@@ -463,16 +464,27 @@ class DanmakuClient:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.info(
-                "房间 %s WebSocket 传输不可用(%s),回退 TCP", self.room_id, exc
-            )
+            logger.info("房间 %s WebSocket 传输不可用(%s),回退 TCP", self.room_id, exc)
             return await TcpTransport.connect(self.host, self.port)
 
     async def _connect(self) -> None:
         self._transport = await self._open_transport()
         self._last_recv = time.monotonic()
+        self._prefetched_messages.clear()
         try:
             await self._send({"type": "loginreq", "roomid": self.room_id})
+            try:
+                login_response = await asyncio.wait_for(
+                    self._read_message(),
+                    timeout=self.connect_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(f"房间 {self.room_id} 等待 loginres 超时") from exc
+            if login_response.get("type") != "loginres":
+                raise ProtocolError(
+                    f"房间 {self.room_id} 登录响应无效: {login_response.get('type')!r}"
+                )
+            self._prefetched_messages.append(login_response)
             await self._send(
                 {"type": "joingroup", "rid": self.room_id, "gid": self.group_id}
             )
@@ -531,6 +543,7 @@ class DanmakuClient:
             await asyncio.gather(task, return_exceptions=True)
         transport = self._transport
         self._transport = None
+        self._prefetched_messages.clear()
         if transport is not None:
             # 先 abort 立即释放连接(close 是 graceful 关闭,对端不配合
             # FIN 时可拖到 TCP 超时),再有界等待传输真正关闭,避免旧

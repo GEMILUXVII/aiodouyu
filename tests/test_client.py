@@ -64,6 +64,49 @@ async def test_handshake_and_messages(server):
     assert join == {"type": "joingroup", "rid": "1234", "gid": "-9999"}
 
 
+async def test_connected_event_waits_for_server_login_response(server):
+    server.login_response_gate = asyncio.Event()
+    client = make_client(server, emit_connection_events=True, types={"rss"})
+    iterator = client.__aiter__()
+    next_message = asyncio.create_task(iterator.__anext__())
+
+    try:
+        for _ in range(20):
+            if server.received:
+                break
+            await asyncio.sleep(0.01)
+        assert server.received == [{"type": "loginreq", "roomid": "1234"}]
+        assert next_message.done() is False
+
+        server.login_response_gate.set()
+        message = await asyncio.wait_for(next_message, timeout=1)
+        assert message["type"] == EVENT_CONNECTED
+
+        for _ in range(20):
+            if len(server.received) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert server.received[1] == {
+            "type": "joingroup",
+            "rid": "1234",
+            "gid": "-9999",
+        }
+    finally:
+        await client.close()
+
+
+async def test_login_response_timeout_is_reported_and_transport_is_closed(server):
+    server.login_response_gate = asyncio.Event()
+    client = make_client(server, reconnect=False, connect_timeout=0.05)
+
+    try:
+        with pytest.raises(ConnectionClosed, match="等待 loginres 超时"):
+            await collect(client, 1, timeout=1)
+        assert client.connected is False
+    finally:
+        await client.close()
+
+
 async def test_types_filter(server):
     async def script(srv, reader, writer, index):
         srv.send(writer, {"type": "chatmsg", "txt": "skip"})
