@@ -38,6 +38,8 @@ class FakeDanmakuClient:
 @pytest.mark.asyncio
 async def test_rss_transitions_require_http_confirmation(monkeypatch):
     monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.01)
+    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_RETRY_INTERVAL", 0.01)
+    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_WINDOW", 0.02)
     http_status = {"is_live": True}
     calls = []
 
@@ -57,6 +59,7 @@ async def test_rss_transitions_require_http_confirmation(monkeypatch):
         offline_callback=lambda room_id, duration: events.append("offline"),
         client_factory=lambda: client,
         notify_cooldown=0,
+        offline_confirmation=0,
     )
     monitor.start()
 
@@ -76,11 +79,88 @@ async def test_rss_transitions_require_http_confirmation(monkeypatch):
     await asyncio.sleep(0.05)
     assert events == ["live", "offline"]
     assert monitor.last_live_status is False
-    assert calls == [
-        (12725169, "betard"),
-        (12725169, "betard"),
-        (12725169, "betard"),
-    ]
+    assert len(calls) >= 3
+    assert set(calls) == {(12725169, "betard")}
+
+    await monitor.stop()
+
+
+@pytest.mark.asyncio
+async def test_rss_candidate_waits_for_delayed_http_state(monkeypatch):
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_RETRY_INTERVAL", 0.01)
+    monkeypatch.setattr(monitor_module, "RSS_CONFIRM_WINDOW", 0.1)
+    observations = iter([False, True])
+    events = []
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        is_live = next(observations)
+        return SimpleNamespace(
+            is_live=is_live,
+            started_at=100.0 if is_live else None,
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    client = FakeDanmakuClient()
+    monitor = LiveStatusMonitor(
+        2,
+        live_callback=lambda room_id, message: events.append("live"),
+        client_factory=lambda: client,
+        notify_cooldown=0,
+    )
+    monitor.start()
+
+    client.push({"type": "rss", "ss": "1", "ivl": "0"})
+    await asyncio.sleep(0.08)
+
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+    await monitor.stop()
+
+
+@pytest.mark.asyncio
+async def test_transient_offline_requires_stable_http_confirmation(monkeypatch):
+    monkeypatch.setattr(monitor_module, "RECONCILE_INTERVAL", 0.005)
+    http_status = {"is_live": True}
+    events = []
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(
+            is_live=http_status["is_live"],
+            started_at=100.0 if http_status["is_live"] else None,
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    client = FakeDanmakuClient()
+    monitor = LiveStatusMonitor(
+        3,
+        live_callback=lambda room_id, message: events.append("live"),
+        offline_callback=lambda room_id, duration: events.append("offline"),
+        client_factory=lambda: client,
+        notify_cooldown=0,
+        offline_confirmation=0.05,
+    )
+    monitor.start()
+
+    client.push({"type": "rss", "ss": "1", "ivl": "0"})
+    await asyncio.sleep(0.03)
+    assert events == ["live"]
+
+    http_status["is_live"] = False
+    client.push({"type": "rss", "ss": "0", "ivl": "0"})
+    await asyncio.sleep(0.03)
+    assert events == ["live"]
+
+    http_status["is_live"] = True
+    await asyncio.sleep(0.06)
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+
+    http_status["is_live"] = False
+    client.push({"type": "rss", "ss": "0", "ivl": "0"})
+    await asyncio.sleep(0.09)
+    assert events == ["live", "offline"]
+    assert monitor.last_live_status is False
 
     await monitor.stop()
 
