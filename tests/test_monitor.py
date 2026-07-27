@@ -193,3 +193,28 @@ async def test_failed_confirmation_does_not_emit_candidate(monkeypatch):
     assert monitor.is_healthy
 
     await monitor.stop()
+
+
+def test_inherited_pending_transition_requires_fresh_http_confirmation():
+    events = []
+    monitor = LiveStatusMonitor(
+        4,
+        offline_callback=lambda room_id, duration: events.append("offline"),
+        inherit_state={
+            "last_live_status": True,
+            "live_start_time": 100.0,
+            "has_announced_live": True,
+            "last_notify_time": 0.0,
+            "pending_status": False,
+            "pending_msg": {"type": "aiodouyu.resync"},
+            "pending_observed_at": 200.0,
+            "pending_needs_resync": False,
+        },
+    )
+
+    monitor._reconcile_pending()
+
+    assert events == []
+    assert monitor.last_live_status is True
+    assert monitor._pending_status is False
+    assert monitor._pending_needs_resync is True

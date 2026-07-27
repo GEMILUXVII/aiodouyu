@@ -101,6 +101,8 @@ class LiveStatusMonitor:
             self._pending_needs_resync = bool(
                 inherit_state.get("pending_needs_resync", False)
             )
+            if self._pending_status is not None:
+                self._pending_needs_resync = True
 
         self._stop_flag = False
         self._client: DanmakuClient | None = None
