@@ -24,6 +24,7 @@ import asyncio
 import http.client
 import json
 import re
+import secrets
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
@@ -51,9 +52,16 @@ _BETARD_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.douyu.com/",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 Source = Literal["auto", "betard", "open"]
+
+
+def _betard_url(room_id: int) -> str:
+    """Build a cache-busted URL for Douyu's CDN-cached status endpoint."""
+    return f"{_BETARD_URL.format(room_id=room_id)}?_={secrets.token_hex(8)}"
 
 
 @dataclass
@@ -279,9 +287,7 @@ async def fetch_room(
         raise ValueError("room_id 必须为正整数")
 
     if source == "betard":
-        payload = await _fetch(
-            _BETARD_URL.format(room_id=room_id), _BETARD_HEADERS, timeout
-        )
+        payload = await _fetch(_betard_url(room_id), _BETARD_HEADERS, timeout)
         return _parse_betard(room_id, payload)
     if source == "open":
         payload = await _fetch(_OPEN_URL.format(room_id=room_id), {}, timeout)
@@ -292,9 +298,7 @@ async def fetch_room(
     # auto: betard 传输层失败(接口变更/风控)时回退 open;
     # RoomNotFound 是明确结论,不回退(注意它是 ApiError 的子类,须先拦截)
     try:
-        payload = await _fetch(
-            _BETARD_URL.format(room_id=room_id), _BETARD_HEADERS, timeout
-        )
+        payload = await _fetch(_betard_url(room_id), _BETARD_HEADERS, timeout)
         return _parse_betard(room_id, payload)
     except RoomNotFound:
         raise

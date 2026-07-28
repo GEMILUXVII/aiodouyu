@@ -26,6 +26,7 @@ RESYNC_RETRY_MAX = 60.0
 RESYNC_ROOM_GONE_INTERVAL = 1800.0
 RSS_CONFIRM_RETRY_INTERVAL = 2.0
 RSS_CONFIRM_WINDOW = 60.0
+STALE_LIVE_RETRY_INTERVAL = 30.0
 RECONCILE_INTERVAL = 1.0
 STOP_TIMEOUT = 5.0
 OFFLINE_CONFIRMATION = 90.0
@@ -379,7 +380,17 @@ class LiveStatusMonitor:
             else:
                 if is_live and started_at is not None:
                     self.live_start_time = started_at
-                callback, args = self._apply_transition(is_live, msg, now)
+                event_time = (
+                    self._pending_observed_at
+                    if not is_live and self._pending_status is False
+                    else None
+                )
+                callback, args = self._apply_transition(
+                    is_live,
+                    msg,
+                    now,
+                    event_time=event_time,
+                )
 
             if callback:
                 callback(*args)
@@ -534,6 +545,29 @@ class LiveStatusMonitor:
             self._schedule_resync()
             return
 
+        fetched_at = time.time()
+        last_offline = self._valid_started_at(self.last_offline_time, fetched_at)
+        if (
+            info.is_live
+            and self.last_live_status is False
+            and last_offline is not None
+            and self._valid_session_started_at(
+                getattr(info, "started_at", None),
+                fetched_at,
+            )
+            is None
+        ):
+            # betard start timestamps have only second precision. A value in
+            # the same second as the previous offline edge is ambiguous; keep
+            # the status unchanged and let authoritative realtime rss win.
+            logger.info(
+                "斗鱼直播间 %s 的 HTTP 直播快照缺少晚于最近下播时间的"
+                "有效开播时间,暂不判定为新场",
+                self.room_id,
+            )
+            self._schedule_resync(STALE_LIVE_RETRY_INTERVAL)
+            return
+
         if (
             self._pending_needs_resync
             and self._pending_status is False
@@ -574,10 +608,10 @@ class LiveStatusMonitor:
             not info.is_live
             and self.last_live_status is True
             and self._live_observed_via_rss
-            and self._pending_status is not False
         ):
             # Until HTTP has agreed with a real-time live event at least once,
-            # an old offline snapshot must not immediately reverse it.
+            # neither a cached offline snapshot nor a reverse rss packet may
+            # immediately undo it.
             observed_at = self._live_rss_observed_at or time.time()
             age = max(time.time() - observed_at, 0.0)
             if age < RSS_CONFIRM_WINDOW:
@@ -587,12 +621,14 @@ class LiveStatusMonitor:
                 )
                 self._schedule_resync(delay)
                 logger.info(
-                    "斗鱼直播间 %s 的 HTTP 状态尚未追上实时开播,继续保留并复查",
+                    "斗鱼直播间 %s 的实时开播仍在保护期,暂不应用 HTTP 下播"
+                    "快照并继续复查",
                     self.room_id,
                 )
                 return
             logger.warning(
-                "斗鱼直播间 %s 的实时开播在 %.0f 秒内未获 HTTP 确认,转入正常下播复核",
+                "斗鱼直播间 %s 的实时开播在 %.0f 秒内未获 HTTP 确认,"
+                "保护期结束并转入正常下播复核",
                 self.room_id,
                 RSS_CONFIRM_WINDOW,
             )
@@ -601,7 +637,6 @@ class LiveStatusMonitor:
 
         self._resync_pending = False
         self._schedule_next_periodic_resync()
-        fetched_at = time.time()
         message = self._resync_message(info, fetched_at)
         if info.is_live:
             self._live_observed_via_rss = False

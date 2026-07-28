@@ -84,6 +84,29 @@ async def test_betard_live(monkeypatch):
     assert info.raw["show_status"] == 1
 
 
+@pytest.mark.parametrize("source", ["betard", "auto"])
+async def test_betard_status_request_bypasses_cdn_cache(monkeypatch, source):
+    calls = []
+
+    async def fake(url, headers, timeout):
+        calls.append((url, dict(headers)))
+        return BETARD_LIVE
+
+    tokens = iter(["first", "second"])
+    monkeypatch.setattr(web.secrets, "token_hex", lambda size: next(tokens))
+    monkeypatch.setattr(web, "_fetch", fake)
+
+    await web.fetch_room(9999, source=source)
+    await web.fetch_room(9999, source=source)
+
+    assert [url for url, _ in calls] == [
+        "https://www.douyu.com/betard/9999?_=first",
+        "https://www.douyu.com/betard/9999?_=second",
+    ]
+    assert all(headers["Cache-Control"] == "no-cache" for _, headers in calls)
+    assert all(headers["Pragma"] == "no-cache" for _, headers in calls)
+
+
 async def test_betard_video_loop_not_live(monkeypatch):
     payload = {"room": {**BETARD_LIVE["room"], "videoLoop": 1}}
     fake, _ = fake_fetch({BETARD_PREFIX: payload})
