@@ -173,9 +173,27 @@ class LiveStatusMonitor:
             return None
         return value if 0 < value <= now else None
 
+    def _valid_session_started_at(
+        self, started_at: float | None, now: float
+    ) -> float | None:
+        """Return a start timestamp that belongs to the current session."""
+        value = self._valid_started_at(started_at, now)
+        if value is None:
+            return None
+        last_offline = self._valid_started_at(self.last_offline_time, now)
+        if last_offline is not None and value <= last_offline:
+            logger.debug(
+                "斗鱼直播间 %s 的开播时间 %.3f 不晚于最近下播时间 %.3f,已忽略",
+                self.room_id,
+                value,
+                last_offline,
+            )
+            return None
+        return value
+
     def _resync_message(self, info: Any, fetched_at: float) -> dict[str, Any]:
         """Build a JSON-compatible callback message from an HTTP snapshot."""
-        started_at = self._valid_started_at(
+        started_at = self._valid_session_started_at(
             getattr(info, "started_at", None), fetched_at
         )
         return {
@@ -258,7 +276,11 @@ class LiveStatusMonitor:
         try:
             self._obs_seq += 1
             now = time.time()
-            started_at = self._valid_started_at(started_at, now)
+            started_at = (
+                self._valid_session_started_at(started_at, now)
+                if is_live
+                else self._valid_started_at(started_at, now)
+            )
             callback: Callable | None = None
             args: tuple = ()
 
@@ -296,12 +318,8 @@ class LiveStatusMonitor:
                 self._clear_pending()
                 if is_live:
                     self._has_announced_live = True
-                if is_live and started_at is not None:
-                    if (
-                        self.live_start_time is None
-                        or started_at < self.live_start_time
-                    ):
-                        self.live_start_time = started_at
+                    if self.live_start_time is None:
+                        self.live_start_time = started_at or now
             elif (
                 not is_live
                 and self.last_live_status is True
@@ -403,11 +421,13 @@ class LiveStatusMonitor:
             # A real-time room event must not be vetoed by a slower HTTP
             # endpoint. Missing this edge loses the whole session because rss
             # is normally sent only once per transition.
+            observed_at = time.time()
             self._live_observed_via_rss = True
-            self._live_rss_observed_at = time.time()
+            self._live_rss_observed_at = observed_at
             self._apply_observation(
                 True,
                 msg,
+                started_at=observed_at,
                 announce_initial_live=True,
                 bypass_cooldown=True,
             )

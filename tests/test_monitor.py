@@ -465,7 +465,7 @@ def test_initial_live_without_announcement_still_emits_offline(monkeypatch):
     assert events == [("offline", 200.0)]
 
 
-def test_same_live_snapshot_only_corrects_start_time_earlier(monkeypatch):
+def test_same_live_snapshot_does_not_rewrite_session_start(monkeypatch):
     monkeypatch.setattr(monitor_module.time, "time", lambda: 1000.0)
     monitor = LiveStatusMonitor(6, announce_initial_live=False)
 
@@ -474,10 +474,117 @@ def test_same_live_snapshot_only_corrects_start_time_earlier(monkeypatch):
     assert monitor.live_start_time == 900.0
 
     monitor._apply_observation(True, {}, started_at=850.0)
-    assert monitor.live_start_time == 850.0
+    assert monitor.live_start_time == 900.0
 
     monitor._apply_observation(True, {}, started_at=1100.0)
-    assert monitor.live_start_time == 850.0
+    assert monitor.live_start_time == 900.0
+
+
+@pytest.mark.parametrize(
+    ("last_offline_time", "started_at", "expected"),
+    [
+        (None, 900.0, 900.0),
+        (1000.0, 1000.0, None),
+        (1000.0, 1001.0, 1001.0),
+    ],
+)
+def test_resync_started_at_respects_session_boundary(
+    last_offline_time, started_at, expected
+):
+    monitor = LiveStatusMonitor(
+        8,
+        inherit_state={
+            "last_live_status": False,
+            "last_offline_time": last_offline_time,
+        },
+    )
+
+    message = monitor._resync_message(
+        SimpleNamespace(is_live=True, started_at=started_at),
+        fetched_at=1100.0,
+    )
+
+    assert message["room_info"]["started_at"] == expected
+
+
+def test_quick_reopen_rejects_previous_session_started_at(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+    events = []
+    monitor = LiveStatusMonitor(
+        9,
+        live_callback=lambda room_id, message: events.append(
+            ("live", monitor.live_start_time)
+        ),
+        offline_callback=lambda room_id, duration: events.append(("offline", duration)),
+        notify_cooldown=0,
+        offline_confirmation=0,
+    )
+
+    monitor._apply_observation(True, {}, started_at=900.0)
+    now["value"] = 1005.0
+    monitor._apply_observation(False, {})
+    now["value"] = 1006.0
+    monitor._apply_observation(True, {}, started_at=900.0)
+    now["value"] = 1010.0
+    monitor._apply_observation(False, {})
+
+    assert events == [
+        ("live", 900.0),
+        ("offline", 105.0),
+        ("live", 1006.0),
+        ("offline", 4.0),
+    ]
+
+
+def test_http_new_session_accepts_started_at_after_last_offline(monkeypatch):
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 1100.0)
+    starts = []
+    monitor = LiveStatusMonitor(
+        10,
+        live_callback=lambda room_id, message: starts.append(monitor.live_start_time),
+        inherit_state={
+            "last_live_status": False,
+            "last_offline_time": 1000.0,
+        },
+        notify_cooldown=0,
+    )
+
+    monitor._apply_observation(True, {}, started_at=1050.0)
+
+    assert starts == [1050.0]
+    assert monitor.live_start_time == 1050.0
+
+
+def test_realtime_live_start_stays_fixed_through_http_and_duration(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+    starts = []
+    durations = []
+    monitor = LiveStatusMonitor(
+        11,
+        live_callback=lambda room_id, message: starts.append(monitor.live_start_time),
+        offline_callback=lambda room_id, duration: durations.append(duration),
+        inherit_state={
+            "last_live_status": False,
+            "last_offline_time": 900.0,
+        },
+        notify_cooldown=0,
+        offline_confirmation=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+    now["value"] = 1002.0
+    monitor._apply_observation(True, {}, started_at=950.0)
+
+    assert starts == [1000.0]
+    assert monitor.live_start_time == 1000.0
+
+    now["value"] = 1010.0
+    monitor._apply_observation(False, {})
+
+    assert durations == [10.0]
+    assert durations[0] == monitor.last_offline_time - starts[0]
 
 
 @pytest.mark.asyncio
