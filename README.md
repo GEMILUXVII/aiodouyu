@@ -1,26 +1,56 @@
-# aiodouyu
+<h1 align="center">aiodouyu</h1>
 
-[![ci](https://github.com/GEMILUXVII/aiodouyu/actions/workflows/ci.yml/badge.svg)](https://github.com/GEMILUXVII/aiodouyu/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/aiodouyu)](https://pypi.org/project/aiodouyu/)
-[![Python](https://img.shields.io/pypi/pyversions/aiodouyu)](https://pypi.org/project/aiodouyu/)
-[![Downloads](https://img.shields.io/pypi/dm/aiodouyu)](https://pypi.org/project/aiodouyu/)
-[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](#为什么有这个库)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/GEMILUXVII/aiodouyu/blob/master/LICENSE)
+<div align="center">
+  <strong>斗鱼弹幕与直播状态 asyncio 客户端</strong>
+</div>
 
-斗鱼弹幕与房间状态的 **asyncio** 客户端库 —— 零依赖、自动重连、干净停止。
+<br>
 
-[English](#english) | [背景](#为什么有这个库) | [安装](#安装) | [用法](#用法) | [房间信息](#房间信息http) | [多房间](#多房间danmakuhub) | [传输方式](#传输方式tcp--websocket) | [类型化模型](#类型化模型可选) | [录制与回放](#录制与回放) | [协议说明](#协议说明) | [版本与稳定性](#版本与稳定性) | [局限与路线图](#局限与路线图)
+<div align="center">
+  <a href="https://pypi.org/project/aiodouyu/"><img src="https://img.shields.io/pypi/v/aiodouyu?style=for-the-badge&color=9644F4" alt="PyPI Version"></a>
+  <a href="https://github.com/GEMILUXVII/aiodouyu/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-E53935?style=for-the-badge" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://github.com/GEMILUXVII/aiodouyu/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/GEMILUXVII/aiodouyu/ci.yml?branch=master&style=for-the-badge&label=CI&logo=github" alt="CI Status"></a>
+</div>
 
-## 为什么有这个库
+<div align="center">
+  <a href="https://www.douyu.com/"><img src="https://img.shields.io/badge/Douyu-Live-FF9800?style=for-the-badge&logo=livejournal&logoColor=white" alt="Douyu"></a>
+  <a href="#功能特性"><img src="https://img.shields.io/badge/dependencies-0-00BFA5?style=for-the-badge" alt="Zero Dependencies"></a>
+  <a href="https://pypi.org/project/aiodouyu/"><img src="https://img.shields.io/pypi/dm/aiodouyu?style=for-the-badge&label=downloads&color=2196F3" alt="PyPI Downloads"></a>
+  <a href="https://github.com/GEMILUXVII/aiodouyu/commits/master"><img src="https://img.shields.io/badge/updated-2026--08--06-0097A7?style=for-the-badge&logo=calendar&logoColor=white" alt="Last Updated"></a>
+</div>
 
-Python 生态里的斗鱼弹幕库已全部停止维护：[pydouyu](https://github.com/Kexiii/pydouyu)（2022 年后无更新）、[danmu](https://github.com/littlecodersh/danmu)（2017）、[danmaku](https://github.com/IsoaSFlus/danmaku)（已归档）。aiodouyu 是这个空缺的现代替代品：
+<br>
 
-- **asyncio 优先**：每个房间一个协程，不再是"每房间三个线程"
-- **零运行时依赖**：纯标准库 TCP 实现
-- **自动重连**：指数退避 + 抖动；空闲超时检测半开连接
-- **干净停止**：`close()` 立即中止，不遗留线程/任务（pydouyu 的停止会泄漏线程）
-- **完整消息流**：rss（开播状态）、chatmsg（弹幕）、dgb（礼物）、uenter（进房）……全部透出
-- **可测试**：附带完整测试套件与假服务器测试基建
+<div align="center">
+  <a href="#项目简介">项目简介</a> •
+  <a href="#功能特性">功能特性</a> •
+  <a href="#安装">安装</a> •
+  <a href="#快速开始">快速开始</a> •
+  <a href="#直播状态判定">状态判定</a> •
+  <a href="CHANGELOG.md">更新日志</a> •
+  <a href="#english">English</a>
+</div>
+
+## 项目简介
+
+aiodouyu 是面向 Python 3.10+ 的斗鱼异步客户端库，提供弹幕消息流、房间信息查询和低延迟直播状态监控。它基于标准库实现，无运行时依赖，适合机器人通知、多直播间监控、弹幕采集与协议调试。
+
+Python 生态中较早的斗鱼弹幕库大多已停止维护，例如 [pydouyu](https://github.com/Kexiii/pydouyu)、[danmu](https://github.com/littlecodersh/danmu) 和已归档的 [danmaku](https://github.com/IsoaSFlus/danmaku)。aiodouyu 在保留轻量特性的同时，补齐了 asyncio、自动重连、状态对账和可测试性。
+
+## 功能特性
+
+- **asyncio 原生**：使用异步迭代或同步/异步回调消费消息
+- **零运行时依赖**：TCP、WebSocket 与 HTTP 能力均由 Python 标准库实现
+- **自动重连**：指数退避与抖动，并通过空闲超时识别半开连接
+- **干净停止**：`close()` / `stop()` 及时结束内部任务，不遗留后台线程
+- **完整消息流**：透出 `rss`、`chatmsg`、`dgb`、`uenter` 等原始消息
+- **直播状态监控**：实时 `rss` 优先，HTTP 对账补偿断连或事件丢失
+- **轮播识别**：区分真实开播与视频轮播，避免将 `ss=1, ivl=1` 误报为开播
+- **多房间管理**：`DanmakuHub` 负责并发、异常隔离、聚合队列与优雅关停
+- **录制与回放**：将真实消息流保存为 JSONL，供测试、复现和离线分析
+- **类型化模型**：可选 dataclass 模型，同时保留完整原始消息
+- **可测试**：包含协议、传输、监控器与假服务器测试基建
 
 ## 安装
 
@@ -30,7 +60,7 @@ pip install aiodouyu
 
 要求 Python >= 3.10。
 
-## 用法
+## 快速开始
 
 ### 异步迭代（推荐）
 
@@ -44,7 +74,7 @@ async def main():
             if msg["type"] == "chatmsg":
                 print(f'{msg.get("nn")}: {msg.get("txt")}')
             elif msg["type"] == "rss":
-                # ivl 并非必有字段;仅显式 '1' 表示视频轮播
+                # ivl is optional; only the explicit value "1" means video loop.
                 is_live = msg.get("ss") == "1" and msg.get("ivl") != "1"
                 print("开播" if is_live else "下播")
 
@@ -94,6 +124,26 @@ async for msg in client:
 python -m aiodouyu 9999 --types rss,chatmsg --duration 30
 python -m aiodouyu 9999 --info    # 查询房间信息后退出
 ```
+
+## 直播状态判定
+
+斗鱼 `rss` 消息需要同时读取 `ss` 和 `ivl`。`ss` 表示直播流状态，`ivl`
+表示视频轮播；只判断 `ss` 会把轮播误认为主播开播。
+
+| `ss` | `ivl` | 含义 | 是否真实开播 |
+| --- | --- | --- | --- |
+| `"1"` | `"0"` 或字段缺失 | 正常直播 | 是 |
+| `"1"` | `"1"` | 录像/视频轮播 | 否 |
+| `"0"` | 任意值 | 直播流关闭 | 否 |
+
+```python
+is_live = msg.get("ss") == "1" and msg.get("ivl") != "1"
+```
+
+原始字段值是字符串，而且斗鱼可能在状态切换期间连续发送不同快照。仅需
+读取协议流时可以使用上面的表达式；需要稳定的开播/下播通知时，建议使用
+[`LiveStatusMonitor`](#低延迟开播与已确认下播监控)，由它处理实时事件、
+视频轮播保护、下播确认和 HTTP 对账。
 
 ## 房间信息（HTTP）
 
@@ -166,7 +216,7 @@ await monitor.stop()
 可用 `export_state()` 保存状态，在创建新实例时通过 `inherit_state` 回灌，
 避免干净重启后重复播报。
 
-## 多房间(DanmakuHub)
+## 多房间（DanmakuHub）
 
 监控 N 个主播的应用不必手写任务编排、异常隔离、聚合队列、优雅关停
 这套样板——Hub 把它们上移进库:
@@ -240,7 +290,7 @@ async for msg in replay("dump.jsonl", types={"rss"}):
     ...
 ```
 
-## 传输方式(TCP / WebSocket)
+## 传输方式（TCP / WebSocket）
 
 默认走明文 TCP(`danmuproxy.douyu.com:8601`)。受限网络可切到网页端同款的
 WebSocket 端点:
@@ -305,8 +355,8 @@ DanmakuHub(types={"rss"}, transport="auto")
 - 弃用流程：先在某个 0.Y 版本标记 `DeprecationWarning`，至少隔一个次
   版本后才移除
 
-> 下游示例：AstrBot 插件 astrbot_plugin_douyu_live 以 `>=0.1.2,<0.2`
-> 依赖本库。
+> 下游示例：[astrbot_plugin_douyu_live](https://github.com/GEMILUXVII/astrbot_plugin_douyu_live)
+> 以 `aiodouyu>=0.4.11,<0.5` 依赖本库。
 
 ## English
 
@@ -329,6 +379,15 @@ async with DanmakuClient(room_id=9999) as client:
 
 info = await fetch_room(9999)   # title / owner / category / is_live ...
 ```
+
+## 相关链接
+
+- [PyPI](https://pypi.org/project/aiodouyu/)
+- [GitHub Releases](https://github.com/GEMILUXVII/aiodouyu/releases)
+- [更新日志](CHANGELOG.md)
+- [贡献指南](CONTRIBUTING.md)
+- [问题反馈](https://github.com/GEMILUXVII/aiodouyu/issues)
+- [AstrBot 斗鱼直播通知插件](https://github.com/GEMILUXVII/astrbot_plugin_douyu_live)
 
 ## 许可证
 
