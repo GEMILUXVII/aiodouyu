@@ -97,6 +97,7 @@ class LiveStatusMonitor:
         self._pending_needs_resync = False
         self._live_observed_via_rss = False
         self._live_rss_observed_at: float | None = None
+        self._loop_observed_at: float | None = None
 
         if inherit_state:
             self.last_live_status = inherit_state.get("last_live_status")
@@ -116,6 +117,7 @@ class LiveStatusMonitor:
             self._pending_needs_resync = bool(
                 inherit_state.get("pending_needs_resync", False)
             )
+            self._loop_observed_at = inherit_state.get("loop_observed_at")
             if self._pending_status is not None:
                 self._pending_needs_resync = True
 
@@ -153,6 +155,7 @@ class LiveStatusMonitor:
             "pending_observed_at": self._pending_observed_at,
             "pending_confirmed_at": self._pending_confirmed_at,
             "pending_needs_resync": self._pending_needs_resync,
+            "loop_observed_at": self._loop_observed_at,
         }
 
     def _clear_pending(self) -> None:
@@ -423,6 +426,8 @@ class LiveStatusMonitor:
             status.ss,
             status.ivl,
         )
+        observed_at = time.time()
+        self._loop_observed_at = observed_at if status.is_loop else None
         self._obs_seq += 1
         if self.last_live_status is not None and is_live == self.last_live_status:
             self._clear_pending()
@@ -432,7 +437,6 @@ class LiveStatusMonitor:
             # A real-time room event must not be vetoed by a slower HTTP
             # endpoint. Missing this edge loses the whole session because rss
             # is normally sent only once per transition.
-            observed_at = time.time()
             self._live_observed_via_rss = True
             self._live_rss_observed_at = observed_at
             self._apply_observation(
@@ -546,6 +550,24 @@ class LiveStatusMonitor:
             return
 
         fetched_at = time.time()
+        if bool(getattr(info, "is_loop", False)):
+            self._loop_observed_at = fetched_at
+        elif info.is_live and self._loop_observed_at is not None:
+            loop_age = max(fetched_at - self._loop_observed_at, 0.0)
+            if loop_age < RSS_CONFIRM_WINDOW:
+                delay = min(
+                    RSS_CONFIRM_RETRY_INTERVAL,
+                    max(RSS_CONFIRM_WINDOW - loop_age, 0.0),
+                )
+                self._schedule_resync(delay)
+                logger.info(
+                    "Douyu room %s is in the video-loop guard; deferring a "
+                    "conflicting HTTP live snapshot for %.1fs",
+                    self.room_id,
+                    RSS_CONFIRM_WINDOW - loop_age,
+                )
+                return
+            self._loop_observed_at = None
         last_offline = self._valid_started_at(self.last_offline_time, fetched_at)
         if (
             info.is_live

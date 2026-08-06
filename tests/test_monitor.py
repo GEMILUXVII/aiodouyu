@@ -261,6 +261,96 @@ async def test_reverse_rss_and_cached_http_cannot_undo_realtime_live(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_loop_rss_blocks_transient_http_live(monkeypatch):
+    now = {"value": 1000.0}
+    http_status = {"is_live": True, "is_loop": False}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(
+            is_live=http_status["is_live"],
+            is_loop=http_status["is_loop"],
+            started_at=1000.0,
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    events = []
+    monitor = LiveStatusMonitor(
+        6979222,
+        live_callback=lambda room_id, message: events.append("live"),
+        inherit_state={"last_live_status": False},
+        notify_cooldown=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "1"})
+    now["value"] = 1010.0
+    await monitor._resync()
+
+    assert events == []
+    assert monitor.last_live_status is False
+    assert monitor._resync_pending is True
+
+    http_status.update(is_live=False, is_loop=True)
+    now["value"] = 1012.0
+    await monitor._resync()
+
+    assert events == []
+    assert monitor.last_live_status is False
+
+
+def test_realtime_live_rss_overrides_recent_loop_immediately(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+    events = []
+    monitor = LiveStatusMonitor(
+        6979222,
+        live_callback=lambda room_id, message: events.append("live"),
+        inherit_state={"last_live_status": False},
+        notify_cooldown=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "1"})
+    now["value"] = 1001.0
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "0"})
+
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+
+
+@pytest.mark.asyncio
+async def test_http_live_recovers_after_loop_guard_expires(monkeypatch):
+    now = {"value": 1000.0}
+    monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
+
+    async def fake_fetch_room(room_id, *, source, timeout):
+        return SimpleNamespace(
+            is_live=True,
+            is_loop=False,
+            started_at=1001.0,
+        )
+
+    monkeypatch.setattr(monitor_module, "fetch_room", fake_fetch_room)
+    events = []
+    monitor = LiveStatusMonitor(
+        6979222,
+        live_callback=lambda room_id, message: events.append("live"),
+        inherit_state={"last_live_status": False},
+        notify_cooldown=0,
+    )
+
+    monitor._rss_handler({"type": "rss", "ss": "1", "ivl": "1"})
+    now["value"] += monitor_module.RSS_CONFIRM_WINDOW - 1
+    await monitor._resync()
+    assert events == []
+
+    now["value"] += 2
+    await monitor._resync()
+
+    assert events == ["live"]
+    assert monitor.last_live_status is True
+
+
+@pytest.mark.asyncio
 async def test_short_realtime_session_keeps_original_offline_event_time(monkeypatch):
     now = {"value": 1000.0}
     monkeypatch.setattr(monitor_module.time, "time", lambda: now["value"])
